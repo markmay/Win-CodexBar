@@ -98,7 +98,7 @@ fn decode_string_value(value: SqlValue) -> Option<String> {
         SqlValue::Blob(bytes) => decode_blob(&bytes)?,
         _ => return None,
     };
-    Some(unquote(raw.trim_matches(char::from(0)).trim()))
+    Some(unquote(raw.trim_matches(char::from(0)).trim()).to_string())
 }
 
 fn decode_blob(bytes: &[u8]) -> Option<String> {
@@ -123,13 +123,11 @@ fn decode_blob(bytes: &[u8]) -> Option<String> {
     None
 }
 
-fn unquote(value: &str) -> String {
-    let bytes = value.as_bytes();
-    if value.len() >= 2 && bytes[0] == b'"' && bytes[value.len() - 1] == b'"' {
-        value[1..value.len() - 1].to_string()
-    } else {
-        value.to_string()
-    }
+fn unquote(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value)
 }
 
 #[cfg(test)]
