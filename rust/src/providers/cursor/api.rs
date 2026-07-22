@@ -79,40 +79,12 @@ impl CursorApi {
         &self,
         access_token: &str,
     ) -> Result<UsageSummary, ProviderError> {
-        let url = format!("{}/auth/usage-summary", API2_BASE_URL);
-
-        let response = self
+        let request = self
             .client
-            .get(&url)
+            .get(format!("{}/auth/usage-summary", API2_BASE_URL))
             .header("Authorization", format!("Bearer {access_token}"))
-            .header("Accept", "application/json")
-            .header("x-cursor-client-version", CLIENT_VERSION)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .await?;
-
-        if response.status() == 401 || response.status() == 403 {
-            return Err(ProviderError::AuthRequired);
-        }
-
-        if !response.status().is_success() {
-            return Err(ProviderError::Other(format!(
-                "Cursor API returned {}",
-                response.status()
-            )));
-        }
-
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        serde_json::from_str::<UsageSummary>(&text).map_err(|e| {
-            tracing::warn!(
-                "Cursor usage-summary parse error: {e}; response length: {} bytes",
-                text.len()
-            );
-            ProviderError::Parse(e.to_string())
-        })
+            .header("x-cursor-client-version", CLIENT_VERSION);
+        self.get_usage_summary(request).await
     }
 
     fn get_cookie_header(&self) -> Result<String, ProviderError> {
@@ -123,12 +95,20 @@ impl CursorApi {
         &self,
         cookie_header: &str,
     ) -> Result<UsageSummary, ProviderError> {
-        let url = format!("{}/api/usage-summary", BASE_URL);
-
-        let response = self
+        let request = self
             .client
-            .get(&url)
-            .header("Cookie", cookie_header)
+            .get(format!("{}/api/usage-summary", BASE_URL))
+            .header("Cookie", cookie_header);
+        self.get_usage_summary(request).await
+    }
+
+    /// Send a prepared usage-summary request (auth headers already set) and
+    /// parse the response. Shared by the cookie and Bearer-token paths.
+    async fn get_usage_summary(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<UsageSummary, ProviderError> {
+        let response = request
             .header("Accept", "application/json")
             .timeout(std::time::Duration::from_secs(15))
             .send()
@@ -145,7 +125,6 @@ impl CursorApi {
             )));
         }
 
-        // Try structured deserialization first, fall back to raw JSON on failure
         let text = response
             .text()
             .await

@@ -94,11 +94,7 @@ impl CursorProvider {
         // omits it; usage/plan/cost all come from the usage-summary response.
         let usage =
             Self::build_usage_snapshot(primary, secondary, model_specific, email, plan_type, None);
-        let mut result = ProviderFetchResult::new(usage, "oauth");
-        if let Some(c) = cost {
-            result = result.with_cost(c);
-        }
-        Ok(result)
+        Ok(Self::build_fetch_result(usage, cost, "oauth", None))
     }
 
     /// Fetch usage via the browser-cookie web path.
@@ -116,7 +112,12 @@ impl CursorProvider {
                     plan_type,
                     token_report.as_ref(),
                 );
-                Ok(Self::build_fetch_result(usage, cost, token_report.as_ref()))
+                Ok(Self::build_fetch_result(
+                    usage,
+                    cost,
+                    "web",
+                    token_report.as_ref(),
+                ))
             }
             Err(e) => {
                 tracing::warn!("Cursor API fetch failed: {}", e);
@@ -157,12 +158,13 @@ impl CursorProvider {
     fn build_fetch_result(
         usage: UsageSnapshot,
         cost: Option<CostSnapshot>,
+        source: &str,
         token_report: Option<&token_cost::CursorTokenCostReport>,
     ) -> ProviderFetchResult {
         let cost = token_report
             .and_then(|r| r.merge_into_cost(cost.clone()))
             .or(cost);
-        let mut result = ProviderFetchResult::new(usage, "web");
+        let mut result = ProviderFetchResult::new(usage, source);
         if let Some(c) = cost {
             result = result.with_cost(c);
         }
