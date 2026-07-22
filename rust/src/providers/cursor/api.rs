@@ -8,7 +8,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 const BASE_URL: &str = "https://cursor.com";
+const API2_BASE_URL: &str = "https://api2.cursor.sh";
 const COOKIE_DOMAINS: [&str; 2] = ["cursor.com", "cursor.sh"];
+const CLIENT_VERSION: &str = "3.12.30";
 
 pub(super) type CursorUsageResult = (
     RateWindow,
@@ -58,6 +60,59 @@ impl CursorApi {
         let user_info = user_result.ok();
 
         self.build_result(usage_summary, user_info)
+    }
+
+    /// Fetch usage information using a Cursor access token (Bearer auth against
+    /// `api2.cursor.sh`). This is the token the desktop app itself sends, read
+    /// from its local state database — no browser cookies required.
+    /// Returns (primary, secondary, model_specific, cost, email, plan_type).
+    pub async fn fetch_usage_with_bearer_token(
+        &self,
+        access_token: &str,
+        email: Option<String>,
+    ) -> Result<CursorUsageResult, ProviderError> {
+        let summary = self.fetch_usage_summary_bearer(access_token).await?;
+        self.build_result_with_email(summary, email)
+    }
+
+    async fn fetch_usage_summary_bearer(
+        &self,
+        access_token: &str,
+    ) -> Result<UsageSummary, ProviderError> {
+        let url = format!("{}/auth/usage-summary", API2_BASE_URL);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Accept", "application/json")
+            .header("x-cursor-client-version", CLIENT_VERSION)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await?;
+
+        if response.status() == 401 || response.status() == 403 {
+            return Err(ProviderError::AuthRequired);
+        }
+
+        if !response.status().is_success() {
+            return Err(ProviderError::Other(format!(
+                "Cursor API returned {}",
+                response.status()
+            )));
+        }
+
+        let text = response
+            .text()
+            .await
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
+        serde_json::from_str::<UsageSummary>(&text).map_err(|e| {
+            tracing::warn!(
+                "Cursor usage-summary parse error: {e}; response length: {} bytes",
+                text.len()
+            );
+            ProviderError::Parse(e.to_string())
+        })
     }
 
     fn get_cookie_header(&self) -> Result<String, ProviderError> {
@@ -132,6 +187,15 @@ impl CursorApi {
         &self,
         summary: UsageSummary,
         user_info: Option<UserInfo>,
+    ) -> Result<CursorUsageResult, ProviderError> {
+        let email = user_info.as_ref().and_then(|u| u.email.clone());
+        self.build_result_with_email(summary, email)
+    }
+
+    fn build_result_with_email(
+        &self,
+        summary: UsageSummary,
+        email: Option<String>,
     ) -> Result<CursorUsageResult, ProviderError> {
         let billing_end = summary
             .billing_cycle_end
@@ -219,8 +283,6 @@ impl CursorApi {
                 "team" => "Cursor Team".to_string(),
                 other => format!("Cursor {}", capitalize(other)),
             });
-
-        let email = user_info.as_ref().and_then(|u| u.email.clone());
 
         Ok((
             primary,
@@ -599,6 +661,21 @@ mod tests {
         let (primary, _, _, cost, _, _) = api().build_result(summary, None).unwrap();
         assert!((primary.used_percent - 25.0).abs() < 0.01);
         assert_eq!(cost.unwrap().limit, Some(100.0));
+    }
+
+    #[test]
+    fn bearer_path_passes_email_through() {
+        // The Bearer/token path supplies the email directly (from the local
+        // state DB) rather than via /api/auth/me.
+        let summary = parse_summary(
+            r#"{"membershipType":"pro","individualUsage":{"plan":{"used":1000,"limit":5000,"totalPercentUsed":20.0}}}"#,
+        );
+        let (primary, _, _, _, email, plan_type) = api()
+            .build_result_with_email(summary, Some("person@example.com".to_string()))
+            .unwrap();
+        assert!((primary.used_percent - 20.0).abs() < 0.01);
+        assert_eq!(email.as_deref(), Some("person@example.com"));
+        assert_eq!(plan_type.as_deref(), Some("Cursor Pro"));
     }
 
     #[test]

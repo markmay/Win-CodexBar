@@ -3,6 +3,7 @@
 //! Fetches usage data from Cursor's API using browser cookies
 
 mod api;
+mod token;
 mod token_cost;
 
 use async_trait::async_trait;
@@ -79,6 +80,51 @@ impl CursorProvider {
         Ok((usage, token_report))
     }
 
+    /// Fetch usage using the desktop app's local access token (Bearer auth).
+    /// Mirrors the Codex/Claude pattern of reading a locally stored credential
+    /// instead of scraping browser cookies.
+    async fn fetch_token_usage(&self) -> Result<ProviderFetchResult, ProviderError> {
+        let creds = token::read_credentials()?;
+        let (primary, secondary, model_specific, cost, email, plan_type) = self
+            .api
+            .fetch_usage_with_bearer_token(&creds.access_token, creds.email)
+            .await?;
+
+        // The token-cost dashboard page is cookie-gated, so the Bearer path
+        // omits it; usage/plan/cost all come from the usage-summary response.
+        let usage =
+            Self::build_usage_snapshot(primary, secondary, model_specific, email, plan_type, None);
+        let mut result = ProviderFetchResult::new(usage, "oauth");
+        if let Some(c) = cost {
+            result = result.with_cost(c);
+        }
+        Ok(result)
+    }
+
+    /// Fetch usage via the browser-cookie web path.
+    async fn fetch_web_result(
+        &self,
+        ctx: &FetchContext,
+    ) -> Result<ProviderFetchResult, ProviderError> {
+        match self.fetch_web_usage(ctx).await {
+            Ok(((primary, secondary, model_specific, cost, email, plan_type), token_report)) => {
+                let usage = Self::build_usage_snapshot(
+                    primary,
+                    secondary,
+                    model_specific,
+                    email,
+                    plan_type,
+                    token_report.as_ref(),
+                );
+                Ok(Self::build_fetch_result(usage, cost, token_report.as_ref()))
+            }
+            Err(e) => {
+                tracing::warn!("Cursor API fetch failed: {}", e);
+                Err(e)
+            }
+        }
+    }
+
     fn build_usage_snapshot(
         primary: RateWindow,
         secondary: Option<RateWindow>,
@@ -141,44 +187,31 @@ impl Provider for CursorProvider {
     }
 
     async fn fetch_usage(&self, ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
-        tracing::debug!("Fetching Cursor usage via web API");
+        tracing::debug!("Fetching Cursor usage");
 
         match ctx.source_mode {
-            // Cli is only ever set by the shell for "no cookie yet"; treat it as
-            // web so empty-manual users get browser cookie attempt (or AuthRequired)
-            // instead of "Source mode 'Cli' not supported" (#212).
-            SourceMode::Auto | SourceMode::Web | SourceMode::Cli => {
-                match self.fetch_web_usage(ctx).await {
-                    Ok((
-                        (primary, secondary, model_specific, cost, email, plan_type),
-                        token_report,
-                    )) => {
-                        let usage = Self::build_usage_snapshot(
-                            primary,
-                            secondary,
-                            model_specific,
-                            email,
-                            plan_type,
-                            token_report.as_ref(),
-                        );
-                        Ok(Self::build_fetch_result(
-                            usage,
-                            cost,
-                            token_report.as_ref(),
-                        ))
-                    }
-                    Err(e) => {
-                        tracing::warn!("Cursor API fetch failed: {}", e);
-                        Err(e)
-                    }
+            // Read the desktop app's local access token and use Bearer auth.
+            SourceMode::OAuth => self.fetch_token_usage().await,
+            // Prefer the local token; fall back to browser cookies when Cursor
+            // isn't installed/signed in so browser-only users still work.
+            SourceMode::Auto => match self.fetch_token_usage().await {
+                Ok(result) => Ok(result),
+                Err(token_err) => {
+                    tracing::debug!(
+                        "Cursor token path unavailable ({token_err}); falling back to browser cookies"
+                    );
+                    self.fetch_web_result(ctx).await
                 }
-            }
-            SourceMode::OAuth => Err(ProviderError::UnsupportedSource(ctx.source_mode)),
+            },
+            // Cli is only ever set by the shell for "no cookie yet"; treat it as
+            // web so empty-manual users get a browser cookie attempt (or
+            // AuthRequired) instead of "Source mode 'Cli' not supported" (#212).
+            SourceMode::Web | SourceMode::Cli => self.fetch_web_result(ctx).await,
         }
     }
 
     fn available_sources(&self) -> Vec<SourceMode> {
-        vec![SourceMode::Auto, SourceMode::Web]
+        vec![SourceMode::Auto, SourceMode::OAuth, SourceMode::Web]
     }
 
     fn supports_web(&self) -> bool {
@@ -218,13 +251,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_mode_still_unsupported() {
+    async fn oauth_mode_reads_local_token() {
+        // Point at a missing state DB so the token read fails fast (no network).
+        // SAFETY: single-threaded test setup; no other thread reads this var.
+        unsafe {
+            std::env::set_var("CURSOR_STATE_DB", "/nonexistent/cursor-state.vscdb");
+        }
         let provider = CursorProvider::new();
         let ctx = FetchContext {
             source_mode: SourceMode::OAuth,
             ..FetchContext::default()
         };
-        let err = provider.fetch_usage(&ctx).await.expect_err("oauth unsupported");
-        assert!(matches!(err, ProviderError::UnsupportedSource(SourceMode::OAuth)));
+        let err = provider.fetch_usage(&ctx).await.expect_err("no cursor db");
+        unsafe {
+            std::env::remove_var("CURSOR_STATE_DB");
+        }
+        // OAuth is now a supported source backed by the local token, so the
+        // error must reflect a missing/unauthenticated token, not UnsupportedSource.
+        assert!(
+            matches!(
+                err,
+                ProviderError::NotInstalled(_) | ProviderError::AuthRequired
+            ),
+            "expected missing-token style error, got: {err}"
+        );
     }
 }
