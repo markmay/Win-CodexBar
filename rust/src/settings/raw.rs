@@ -19,11 +19,15 @@ pub(super) struct RawSettings {
     #[serde(default)]
     adaptive_refresh: bool,
     refresh_all_providers_on_menu_open: bool,
+    #[serde(default)]
+    low_power_mode: bool,
+
     start_minimized: bool,
     start_at_login: bool,
     show_notifications: bool,
     sound_enabled: bool,
-    sound_volume: u8,
+    notification_sound_paths: NotificationSoundPaths,
+    notification_sound_theme: NotificationSoundTheme,
     high_usage_threshold: f64,
     critical_usage_threshold: f64,
     provider_usage_thresholds: HashMap<String, UsageThresholdOverride>,
@@ -153,8 +157,14 @@ pub(super) struct RawSettings {
     float_bar_show_reset_inline: bool,
     #[serde(default)]
     float_bar_show_cost: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     promote_tray_icon: bool,
+    #[serde(default = "default_true")]
+    claude_daily_routines_usage_visible: bool,
+    #[serde(default)]
+    weekly_progress_work_days: Option<u8>,
+    #[serde(default = "default_alibaba_token_plan_region")]
+    alibaba_token_plan_region: String,
 }
 
 impl Default for RawSettings {
@@ -165,11 +175,13 @@ impl Default for RawSettings {
             refresh_interval_secs: s.refresh_interval_secs,
             adaptive_refresh: s.adaptive_refresh,
             refresh_all_providers_on_menu_open: s.refresh_all_providers_on_menu_open,
+            low_power_mode: s.low_power_mode,
             start_minimized: s.start_minimized,
             start_at_login: s.start_at_login,
             show_notifications: s.show_notifications,
             sound_enabled: s.sound_enabled,
-            sound_volume: s.sound_volume,
+            notification_sound_paths: s.notification_sound_paths,
+            notification_sound_theme: s.notification_sound_theme,
             high_usage_threshold: s.high_usage_threshold,
             critical_usage_threshold: s.critical_usage_threshold,
             provider_usage_thresholds: HashMap::new(),
@@ -246,6 +258,9 @@ impl Default for RawSettings {
             float_bar_show_reset_inline: s.float_bar_show_reset_inline,
             float_bar_show_cost: s.float_bar_show_cost,
             promote_tray_icon: s.promote_tray_icon,
+            claude_daily_routines_usage_visible: s.claude_daily_routines_usage_visible,
+            weekly_progress_work_days: s.weekly_progress_work_days,
+            alibaba_token_plan_region: s.alibaba_token_plan_region,
         }
     }
 }
@@ -383,6 +398,11 @@ impl From<RawSettings> for Settings {
             ProviderId::MiniMax,
             raw.minimax_api_region,
         );
+        set_region(
+            &mut provider_configs,
+            ProviderId::AlibabaTokenPlan,
+            Some(raw.alibaba_token_plan_region.clone()).filter(|v| !v.trim().is_empty()),
+        );
 
         set_header(
             &mut provider_configs,
@@ -461,11 +481,13 @@ impl From<RawSettings> for Settings {
             refresh_interval_secs: raw.refresh_interval_secs,
             adaptive_refresh: raw.adaptive_refresh,
             refresh_all_providers_on_menu_open: raw.refresh_all_providers_on_menu_open,
+            low_power_mode: raw.low_power_mode,
             start_minimized: raw.start_minimized,
             start_at_login: raw.start_at_login,
             show_notifications: raw.show_notifications,
             sound_enabled: raw.sound_enabled,
-            sound_volume: raw.sound_volume,
+            notification_sound_paths: raw.notification_sound_paths,
+            notification_sound_theme: raw.notification_sound_theme,
             high_usage_threshold: raw.high_usage_threshold,
             critical_usage_threshold: raw.critical_usage_threshold,
             provider_usage_thresholds: normalize_usage_threshold_overrides(
@@ -520,6 +542,16 @@ impl From<RawSettings> for Settings {
             float_bar_show_reset_inline: raw.float_bar_show_reset_inline,
             float_bar_show_cost: raw.float_bar_show_cost,
             promote_tray_icon: raw.promote_tray_icon,
+            claude_daily_routines_usage_visible: raw.claude_daily_routines_usage_visible,
+            weekly_progress_work_days: raw.weekly_progress_work_days,
+            alibaba_token_plan_region: {
+                let trimmed = raw.alibaba_token_plan_region.trim();
+                if trimmed.is_empty() {
+                    "cn".to_string()
+                } else {
+                    trimmed.to_string()
+                }
+            },
         }
     }
 }

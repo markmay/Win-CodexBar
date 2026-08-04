@@ -141,6 +141,14 @@ impl TokenAccountSupport {
                 requires_manual_cookie_source: true,
                 cookie_name: None,
             }),
+            ProviderId::ZoomMate => Some(TokenAccountSupport {
+                title: "Session tokens",
+                subtitle: "Store multiple ZoomMate Cookie headers or credits/status cURL captures.",
+                placeholder: "Cookie: ... or curl 'https://ai.zoom.us/.../credits/status' -H 'Authorization: Bearer ...'",
+                injection: TokenInjection::CookieHeader,
+                requires_manual_cookie_source: true,
+                cookie_name: None,
+            }),
             ProviderId::Mistral => Some(TokenAccountSupport {
                 title: "Session tokens",
                 subtitle: "Store multiple Mistral Cookie headers.",
@@ -188,6 +196,14 @@ impl TokenAccountSupport {
                 injection: TokenInjection::CookieHeader,
                 requires_manual_cookie_source: true,
                 cookie_name: None,
+            }),
+            ProviderId::Notion => Some(TokenAccountSupport {
+                title: "Session tokens",
+                subtitle: "Store multiple Notion Cookie headers or token_v2 values.",
+                placeholder: "Cookie: token_v2=... or paste the token_v2 value",
+                injection: TokenInjection::CookieHeader,
+                requires_manual_cookie_source: true,
+                cookie_name: Some("token_v2"),
             }),
             ProviderId::Sub2Api => Some(TokenAccountSupport {
                 title: "Group API keys",
@@ -245,6 +261,16 @@ impl TokenAccountSupport {
                 placeholder: "API key",
                 injection: TokenInjection::Environment {
                     key: "NEURALWATT_API_KEY".to_string(),
+                },
+                requires_manual_cookie_source: false,
+                cookie_name: None,
+            }),
+            ProviderId::Xai => Some(TokenAccountSupport {
+                title: "Management API keys",
+                subtitle: "Store multiple xAI Management API keys. Team ID is set separately under provider settings.",
+                placeholder: "xai-... Management API key from console.x.ai",
+                injection: TokenInjection::Environment {
+                    key: "XAI_MANAGEMENT_API_KEY".to_string(),
                 },
                 requires_manual_cookie_source: false,
                 cookie_name: None,
@@ -308,7 +334,8 @@ impl TokenAccountSupport {
             | ProviderId::Zed
             | ProviderId::CrossModel
             | ProviderId::LongCat
-            | ProviderId::Wayfinder => None,
+            | ProviderId::Wayfinder
+            | ProviderId::QwenCloud => None,
         }
     }
 

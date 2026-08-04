@@ -61,6 +61,8 @@ pub struct CostSnapshotBridge {
     pub resets_at: Option<String>,
     pub formatted_used: String,
     pub formatted_limit: Option<String>,
+    pub balance: Option<f64>,
+    pub formatted_balance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +83,18 @@ pub struct PaceSnapshot {
     pub eta_seconds: Option<f64>,
     pub expected_used_percent: f64,
     pub actual_used_percent: f64,
+}
+
+/// Session-equivalent weekly forecast for Claude/Codex menu secondary line.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEquivalentForecastSnapshot {
+    pub estimated_windows_to_exhaust_weekly: f64,
+    pub windows_until_reset: i64,
+    pub available_windows_until_reset: f64,
+    pub sample_count: usize,
+    pub weekly_resets_at: String,
+    pub weekly_used_percent: f64,
 }
 
 /// A frontend-friendly snapshot of one provider's usage data.
@@ -107,6 +121,8 @@ pub struct ProviderUsageSnapshot {
     pub tray_status_label: Option<String>,
     pub fetch_duration_ms: Option<u128>,
     pub wayfinder_usage: Option<codexbar::core::WayfinderUsageSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_equivalent_forecast: Option<SessionEquivalentForecastSnapshot>,
 }
 
 pub(crate) fn filter_hidden_codex_spark_rows(
@@ -168,6 +184,9 @@ impl ProviderUsageSnapshot {
             s
         });
 
+        let session_equivalent_forecast =
+            session_equivalent_forecast_for(id, &usage.primary, usage.secondary.as_ref());
+
         Self {
             provider_id: id.cli_name().to_string(),
             display_name: id.display_name().to_string(),
@@ -204,6 +223,8 @@ impl ProviderUsageSnapshot {
                 resets_at: c.resets_at.map(|dt| dt.to_rfc3339()),
                 formatted_used: c.format_used(),
                 formatted_limit: c.format_limit(),
+                balance: c.balance,
+                formatted_balance: c.format_balance(),
             }),
             plan_name: usage.login_method.clone(),
             account_email: usage.account_email.clone(),
@@ -215,6 +236,7 @@ impl ProviderUsageSnapshot {
             tray_status_label: None,
             fetch_duration_ms: None,
             wayfinder_usage: result.wayfinder_usage.clone(),
+            session_equivalent_forecast,
         }
     }
 
@@ -253,8 +275,34 @@ impl ProviderUsageSnapshot {
             tray_status_label: None,
             fetch_duration_ms: None,
             wayfinder_usage: None,
+            session_equivalent_forecast: None,
         }
     }
+}
+
+fn session_equivalent_forecast_for(
+    id: ProviderId,
+    session: &RateWindow,
+    weekly: Option<&RateWindow>,
+) -> Option<SessionEquivalentForecastSnapshot> {
+    if !matches!(id, ProviderId::Claude | ProviderId::Codex) {
+        return None;
+    }
+    let weekly = weekly?;
+    let now = chrono::Utc::now();
+    let provider_id = id.cli_name();
+    codexbar::core::record_provider_windows(provider_id, session, Some(weekly), now);
+    let work_days = Settings::load().weekly_progress_work_days;
+    let forecast =
+        codexbar::core::forecast_for_provider(provider_id, session, weekly, now, work_days)?;
+    Some(SessionEquivalentForecastSnapshot {
+        estimated_windows_to_exhaust_weekly: forecast.estimated_windows_to_exhaust_weekly,
+        windows_until_reset: forecast.windows_until_reset,
+        available_windows_until_reset: forecast.available_windows_until_reset,
+        sample_count: forecast.sample_count,
+        weekly_resets_at: forecast.weekly_resets_at.to_rfc3339(),
+        weekly_used_percent: forecast.weekly_used_percent,
+    })
 }
 
 /// Build a compact tray status label from a raw snapshot using the current language.
@@ -410,11 +458,13 @@ pub struct SettingsSnapshot {
     refresh_interval_secs: u64,
     adaptive_refresh: bool,
     refresh_all_providers_on_menu_open: bool,
+    low_power_mode: bool,
     start_at_login: bool,
     start_minimized: bool,
     show_notifications: bool,
     sound_enabled: bool,
-    sound_volume: u8,
+    notification_sound_theme: codexbar::settings::NotificationSoundTheme,
+    notification_sound_paths: codexbar::settings::NotificationSoundPaths,
     high_usage_threshold: f64,
     critical_usage_threshold: f64,
     provider_usage_thresholds:
@@ -464,6 +514,9 @@ pub struct SettingsSnapshot {
     float_bar_show_reset_inline: bool,
     float_bar_show_cost: bool,
     promote_tray_icon: bool,
+    claude_daily_routines_usage_visible: bool,
+    alibaba_token_plan_region: String,
+    weekly_progress_work_days: Option<u8>,
 }
 
 #[tauri::command]
@@ -511,11 +564,13 @@ impl From<Settings> for SettingsSnapshot {
             refresh_interval_secs: settings.refresh_interval_secs,
             adaptive_refresh: settings.adaptive_refresh,
             refresh_all_providers_on_menu_open: settings.refresh_all_providers_on_menu_open,
+            low_power_mode: settings.low_power_mode,
             start_at_login: settings.start_at_login,
             start_minimized: settings.start_minimized,
             show_notifications: settings.show_notifications,
             sound_enabled: settings.sound_enabled,
-            sound_volume: settings.sound_volume,
+            notification_sound_theme: settings.notification_sound_theme,
+            notification_sound_paths: settings.notification_sound_paths,
             high_usage_threshold: settings.high_usage_threshold,
             critical_usage_threshold: settings.critical_usage_threshold,
             provider_usage_thresholds: settings.provider_usage_thresholds,
@@ -564,6 +619,9 @@ impl From<Settings> for SettingsSnapshot {
             float_bar_show_reset_inline: settings.float_bar_show_reset_inline,
             float_bar_show_cost: settings.float_bar_show_cost,
             promote_tray_icon: settings.promote_tray_icon,
+            claude_daily_routines_usage_visible: settings.claude_daily_routines_usage_visible,
+            alibaba_token_plan_region: settings.alibaba_token_plan_region,
+            weekly_progress_work_days: settings.weekly_progress_work_days,
         }
     }
 }
@@ -574,10 +632,7 @@ pub(crate) fn provider_catalog_for(settings: &Settings) -> Vec<ProviderCatalogEn
         .provider_display_order()
         .into_iter()
         .filter(|provider| {
-            !provider.is_deprecated()
-                || settings
-                    .enabled_providers
-                    .contains(provider.cli_name())
+            !provider.is_deprecated() || settings.enabled_providers.contains(provider.cli_name())
         })
         .map(|provider| ProviderCatalogEntry {
             id: provider.cli_name().to_string(),

@@ -1,5 +1,72 @@
 # Changelog
 
+## [Windows] 0.47.0 - 2026-08-04
+
+Windows port of upstream CodexBar **0.46.0 → 0.47.0**.
+
+### Added
+- Providers: Notion AI and xAI usage surfaces from upstream 0.47.0.
+- CLI: hooks watch mode for live hook event streaming.
+- Low Power Mode to reduce background refresh/work on battery or demand.
+- Cost pace: real-calendar monthly pacing (not rolling 30-day only).
+- Settings: per-notification custom sounds (#251).
+- Russian localization (#248).
+
+### Fixed
+- MiniMax coding-plan web-session auth/status refresh (#250, #246).
+- OpenCode Go rolling 5-hour usage falsely showed 100% "Exhausted" when the real value was 1% (#250, #247).
+- FloatBar DPI-aware sizing on scaled displays (#245).
+- Provider fixes: Cursor, CommandCode, OpenCode Go WAL handling, and ZAI/Kimi/Grok duration windows.
+
+### Changed
+- Upstream 0.47.0 provider and CLI behavior ported onto the Windows tray/desktop shell.
+
+---
+
+## [Windows] 0.46.0 - 2026-07-30
+
+Windows port of upstream CodexBar **0.45.2 → 0.46.0**. macOS-only shell items (WidgetKit, Sparkle, AppKit menu layout, Homebrew, Safari cookie APIs) remain deferred.
+
+### Added
+- Providers: Qwen Cloud (Individual Token Plans with 5-hour and weekly rolling windows) and ZoomMate (credit status with host failover, cURL/cookie auth, bearer mint).
+- Alibaba Token Plan: Personal/Solo variants for mainland (Bailian) and international (Model Studio) accounts via `alibaba_token_plan_region` setting.
+- Claude: prepaid credit balance in cost surfaces from cached/manual web sessions.
+- Claude: setting to hide the Daily Routines row (`claude_daily_routines_usage_visible`, default on).
+- Menu: fractional session-quota estimates on the weekly row ("Estimated: N session quotas left") when session+weekly history qualifies; optional `weekly_progress_work_days`.
+- Codex: local Workspaces indexing foundation — per-project/session/model usage attribution with a local sidecar index; new `codexbar workspaces` CLI and desktop snapshot bridge.
+- CLI: `config dump` redacts stored credentials by default; `--show-secrets` restores raw output.
+
+### Changed
+- Codex local cost scans use the disk cache: unchanged files skipped by mtime/size, grown logs resumed mid-file, 256 KiB line bound — repeat scans are incremental.
+- Automatic tray metric surfaces the highest-used (exhausted) window across providers, preserving per-provider overrides.
+- CLI alias `qwen` now resolves to Qwen Cloud (use `alibaba` for the Coding Plan).
+
+### Fixed
+- Claude: model-scoped weekly rows above Daily Routines; automatic metric prefers account Weekly over exhausted model carve-outs; learned full-session estimate stays visible while the session window is idle.
+- Amp: subscription plans (e.g. Megawatt) parse into Other/Orb percentage windows instead of a misleading cookie error.
+- Grok: explicit cookie refresh with validated session caching for background reuse.
+- Chutes: quota counts render as detail text instead of being misread as reset schedules.
+- LLMProxy: skip already-elapsed reset times when picking the next reset.
+- Ollama: reuse validated browser sessions across refreshes.
+
+---
+
+## [Windows] 0.45.3 - 2026-07-29
+
+### Added
+- Settings: global HTTP proxy for provider traffic (#235, #236).
+- Codex tray: reset-credit **next expiry** on the Reset credits row (count + “Next expires …”; honors Relative reset time) (#241).
+
+### Fixed
+- Tray icon missing from the taskbar after upgrade (#237, #238).
+- Float bar window flipping Settings Auto theme to light (pin WebView2 dark on float bar) (#240).
+
+### Changed
+- Hosted PR check on Blacksmith Windows (fmt, clippy, tests, frontend build); release packaging remains local.
+- Dead-code and helper cleanup (shared SigV4/parse helpers, drop unused CLI args/bridge bindings/icons registry, simplify build scripts).
+
+---
+
 ## [Windows] 0.45.2 - 2026-07-21
 
 Windows port of upstream CodexBar **0.43.0 → 0.45.2** (providers, CLI, cost, and settings surfaces).

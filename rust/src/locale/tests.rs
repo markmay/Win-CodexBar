@@ -79,6 +79,7 @@ fn test_japanese_menu_card_locale_values_are_translated() {
         (LocaleKey::DetailCostUsed, "使用済み"),
         (LocaleKey::DetailCostLimit, "上限"),
         (LocaleKey::DetailCostRemaining, "残り"),
+        (LocaleKey::DetailCostBalance, "残高"),
         (LocaleKey::DetailCostResets, "リセット"),
         (LocaleKey::DetailChartCost, "コスト（30日間）"),
         (LocaleKey::DetailChartCredits, "使用クレジット（30日間）"),
@@ -309,6 +310,19 @@ fn test_locale_key_spanish() {
 }
 
 #[test]
+fn test_locale_key_russian() {
+    assert_eq!(get_text(Language::Russian, LocaleKey::TabGeneral), "Общие");
+    assert_eq!(
+        get_text(Language::Russian, LocaleKey::InterfaceLanguage),
+        "Язык интерфейса"
+    );
+    assert_eq!(
+        get_text(Language::Russian, LocaleKey::StartAtLogin),
+        "Запускать при входе в систему"
+    );
+}
+
+#[test]
 fn test_locale_key_korean() {
     assert_eq!(get_text(Language::Korean, LocaleKey::TabGeneral), "일반");
     assert_eq!(
@@ -342,6 +356,10 @@ fn test_locale_respects_language_setting() {
     // Test that Spanish language returns Spanish strings
     let lang = Language::Spanish;
     assert_eq!(get_text(lang, LocaleKey::TabAbout), "Acerca de");
+
+    // Test that Russian language returns Russian strings
+    let lang = Language::Russian;
+    assert_eq!(get_text(lang, LocaleKey::TabAbout), "О программе");
 }
 
 #[test]
@@ -353,6 +371,7 @@ fn test_english_is_complete_and_other_languages_can_fallback() {
         ("ja-JP", include_str!("ja-JP.ftl")),
         ("ko-KR", include_str!("ko-KR.ftl")),
         ("es-MX", include_str!("es-MX.ftl")),
+        ("ru-RU", include_str!("ru-RU.ftl")),
     ];
 
     let resource_keys: Vec<(&str, HashSet<&str>)> = resources

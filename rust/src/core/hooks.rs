@@ -103,6 +103,17 @@ impl HookEvent {
         self.status = Some(status.into());
         self
     }
+    pub fn with_usage_fraction(mut self, usage: f64) -> Self {
+        let usage = usage.clamp(0.0, 1.0);
+        self.usage_percent = Some(usage);
+        self.remaining_percent = Some((1.0 - usage) * 100.0);
+        self
+    }
+
+    pub fn with_timestamp(mut self, ts: chrono::DateTime<chrono::Utc>) -> Self {
+        self.timestamp = format_unix_utc(ts.timestamp().max(0) as u64);
+        self
+    }
 
     /// `CODEXBAR_*` environment variables for the hook process.
     pub fn environment_variables(&self) -> HashMap<String, String> {
@@ -171,10 +182,10 @@ fn default_timeout_secs() -> u64 {
 impl HookRule {
     fn matched_events(&self) -> Vec<HookEventType> {
         let mut out = self.events.clone();
-        if let Some(event) = self.event {
-            if !out.contains(&event) {
-                out.push(event);
-            }
+        if let Some(event) = self.event
+            && !out.contains(&event)
+        {
+            out.push(event);
         }
         out
     }
@@ -261,7 +272,10 @@ impl HooksConfig {
         if !self.enabled || self.events.len() > Self::MAX_RULES {
             return Vec::new();
         }
-        self.events.iter().filter(|rule| rule.matches(event)).collect()
+        self.events
+            .iter()
+            .filter(|rule| rule.matches(event))
+            .collect()
     }
 
     /// Rules that match the event ignoring the top-level `enabled` flag (for `hooks test`).
@@ -269,7 +283,10 @@ impl HooksConfig {
         if self.events.len() > Self::MAX_RULES {
             return Vec::new();
         }
-        self.events.iter().filter(|rule| rule.matches(event)).collect()
+        self.events
+            .iter()
+            .filter(|rule| rule.matches(event))
+            .collect()
     }
 }
 
@@ -340,7 +357,7 @@ impl HookRunner {
             return;
         }
         HOOK_RATE_LIMITER.with(|limiter| {
-            Self::dispatch(&event, &config, &limiter);
+            Self::dispatch(&event, &config, limiter);
         });
     }
 
@@ -383,10 +400,7 @@ impl HookRunner {
                     if status.success() {
                         return Ok(());
                     }
-                    return Err(format!(
-                        "exit {}",
-                        status.code().unwrap_or(-1)
-                    ));
+                    return Err(format!("exit {}", status.code().unwrap_or(-1)));
                 }
                 Ok(None) => {
                     if started.elapsed() >= timeout {
@@ -544,9 +558,10 @@ pub fn emit_quota_threshold_hooks(
     if previous < 100.0 && used >= 100.0 {
         events.push(HookEventType::QuotaReached);
     }
-    if previous < critical_threshold && used >= critical_threshold && used < 100.0 {
-        events.push(HookEventType::QuotaLow);
-    } else if previous < high_threshold && used >= high_threshold && used < 100.0 {
+    if used < 100.0
+        && (previous < critical_threshold && used >= critical_threshold
+            || previous < high_threshold && used >= high_threshold)
+    {
         events.push(HookEventType::QuotaLow);
     }
     // Reset edge: was exhausted, now recovered.
@@ -563,7 +578,8 @@ pub fn emit_quota_threshold_hooks(
         .name("codexbar-hook".into())
         .spawn(move || {
             for event_type in events {
-                let mut event = HookEvent::new(event_type, provider.clone()).with_used_percent(used);
+                let mut event =
+                    HookEvent::new(event_type, provider.clone()).with_used_percent(used);
                 if !window.is_empty() {
                     event = event.with_window(window.clone());
                 }
@@ -588,14 +604,26 @@ mod tests {
             .with_window("session")
             .with_account("user@example.com");
         let env = event.environment_variables();
-        assert_eq!(env.get("CODEXBAR_EVENT").map(String::as_str), Some("quota_low"));
-        assert_eq!(env.get("CODEXBAR_PROVIDER").map(String::as_str), Some("claude"));
-        assert_eq!(env.get("CODEXBAR_WINDOW").map(String::as_str), Some("session"));
+        assert_eq!(
+            env.get("CODEXBAR_EVENT").map(String::as_str),
+            Some("quota_low")
+        );
+        assert_eq!(
+            env.get("CODEXBAR_PROVIDER").map(String::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            env.get("CODEXBAR_WINDOW").map(String::as_str),
+            Some("session")
+        );
         assert_eq!(
             env.get("CODEXBAR_ACCOUNT").map(String::as_str),
             Some("user@example.com")
         );
-        assert_eq!(env.get("CODEXBAR_USAGE_PERCENT").map(String::as_str), Some("0.8"));
+        assert_eq!(
+            env.get("CODEXBAR_USAGE_PERCENT").map(String::as_str),
+            Some("0.8")
+        );
         assert_eq!(
             env.get("CODEXBAR_REMAINING_PERCENT").map(String::as_str),
             Some("20")

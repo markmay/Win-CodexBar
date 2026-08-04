@@ -31,6 +31,15 @@ pub fn validate_provider_workspace_value(
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         }),
         ProviderId::Zed => validate_zed_url(trimmed),
+        ProviderId::Xai => {
+            if trimmed.contains('/') || trimmed == "." || trimmed == ".." {
+                return Err(
+                    "The xAI team ID must be a single identifier without path separators"
+                        .to_string(),
+                );
+            }
+            Ok(trimmed.to_string())
+        }
         ProviderId::LiteLLM => validate_token_endpoint(trimmed, "LiteLLM base URL", |_| true),
         ProviderId::Sub2Api => validate_sub2api_base_url(trimmed),
         _ => Ok(trimmed.to_string()),
@@ -89,7 +98,7 @@ fn validate_token_endpoint(
         ));
     }
 
-    let url = url::Url::parse(raw).map_err(|e| format!("Invalid {label}: {e}"))?;
+    let url = reqwest::Url::parse(raw).map_err(|e| format!("Invalid {label}: {e}"))?;
     let host = url
         .host_str()
         .ok_or_else(|| format!("{label} must include a host"))?

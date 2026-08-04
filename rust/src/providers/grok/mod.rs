@@ -96,6 +96,28 @@ impl GrokProvider {
         ))
     }
 
+    /// Cookie refresh path (upstream #2458):
+    /// 1. Try last validated cached cookie header (background reuse)
+    /// 2. On miss/auth failure: re-import browser cookies, validate, cache
+    async fn fetch_with_cookie_refresh(&self) -> Result<ProviderFetchResult, ProviderError> {
+        use crate::browser::cookie_cache::CookieHeaderCache;
+
+        if let Some(cached) = CookieHeaderCache::load(ProviderId::Grok) {
+            match self.fetch_with_cookie(&cached.cookie_header).await {
+                Ok(result) => return Ok(result),
+                Err(err) if is_cookie_authentication_failure(&err) => {
+                    CookieHeaderCache::clear(ProviderId::Grok);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let cookie_header = crate::providers::browser_cookie_header(&["grok.com"])?;
+        let result = self.fetch_with_cookie(&cookie_header).await?;
+        let _ = CookieHeaderCache::store(ProviderId::Grok, &cookie_header, "browser");
+        Ok(result)
+    }
+
     async fn fetch_billing(
         &self,
         authorization: Option<String>,
@@ -181,16 +203,14 @@ impl Provider for GrokProvider {
     async fn fetch_usage(&self, ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
         match ctx.source_mode {
             SourceMode::Auto | SourceMode::Web => {
-                if let Some(ref cookie_header) = ctx.manual_cookie_header {
+                if let Some(cookie_header) = &ctx.manual_cookie_header {
                     return self.fetch_with_cookie(cookie_header).await;
                 }
-                match crate::providers::browser_cookie_header(&["grok.com"]) {
-                    Ok(cookie_header) => match self.fetch_with_cookie(&cookie_header).await {
-                        Ok(result) => return Ok(result),
-                        Err(ProviderError::AuthRequired) => {}
-                        Err(e) => return Err(e),
-                    },
-                    Err(ProviderError::NoCookies) => {}
+                // Explicit cookie path: try validated cache, else re-import browser cookies,
+                // validate the session, and cache the header for background reuse (#2458).
+                match self.fetch_with_cookie_refresh().await {
+                    Ok(result) => return Ok(result),
+                    Err(ProviderError::AuthRequired) | Err(ProviderError::NoCookies) => {}
                     Err(e) => return Err(e),
                 }
                 let credentials = Self::load_credentials()?;
@@ -303,6 +323,8 @@ fn result_from_billing(
     team_id: Option<String>,
     login_method: Option<String>,
 ) -> ProviderFetchResult {
+    // Upstream #2431 / #2566: do not infer windowMinutes from time-until-reset.
+    // A monthly quota near its reset would otherwise be misclassified as weekly.
     let mut usage = UsageSnapshot::new(RateWindow::with_details(
         billing.used_percent,
         None,
@@ -330,6 +352,33 @@ fn validate_grpc_headers(headers: &reqwest::header::HeaderMap) -> Result<(), Pro
         )));
     }
     Ok(())
+}
+
+/// Whether a cookie-path error should invalidate the cached browser session.
+fn is_cookie_authentication_failure(err: &ProviderError) -> bool {
+    matches!(err, ProviderError::AuthRequired)
+}
+
+/// Decide the next cookie-refresh step given cache presence and last error.
+/// Pure helper for unit tests of the #2458 refresh flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CookieRefreshAction {
+    UseCached,
+    ReimportBrowser,
+    GiveUp,
+}
+
+fn cookie_refresh_action(
+    has_cached_header: bool,
+    last_error: Option<&ProviderError>,
+) -> CookieRefreshAction {
+    match last_error {
+        None if has_cached_header => CookieRefreshAction::UseCached,
+        None => CookieRefreshAction::ReimportBrowser,
+        Some(err) if is_cookie_authentication_failure(err) => CookieRefreshAction::ReimportBrowser,
+        Some(ProviderError::NoCookies) => CookieRefreshAction::ReimportBrowser,
+        Some(_) => CookieRefreshAction::GiveUp,
+    }
 }
 
 fn parse_grpc_web_response(data: &[u8]) -> Result<GrokBillingSnapshot, ProviderError> {
@@ -528,10 +577,64 @@ mod tests {
         assert_eq!(parsed.access_token, "oidc");
         assert_eq!(parsed.login_method().as_deref(), Some("SuperGrok"));
     }
-
     #[test]
     fn splits_grpc_web_data_frames() {
         let data = [0, 0, 0, 0, 2, 1, 2, 0x80, 0, 0, 0, 1, b'x'];
         assert_eq!(grpc_web_data_frames(&data), vec![vec![1, 2]]);
+    }
+
+    #[test]
+    fn cookie_refresh_uses_cache_when_present() {
+        assert_eq!(
+            cookie_refresh_action(true, None),
+            CookieRefreshAction::UseCached
+        );
+    }
+
+    #[test]
+    fn cookie_refresh_reimports_on_auth_failure() {
+        assert_eq!(
+            cookie_refresh_action(true, Some(&ProviderError::AuthRequired)),
+            CookieRefreshAction::ReimportBrowser
+        );
+        assert_eq!(
+            cookie_refresh_action(false, None),
+            CookieRefreshAction::ReimportBrowser
+        );
+    }
+
+    #[test]
+    fn cookie_refresh_gives_up_on_non_auth_errors() {
+        assert_eq!(
+            cookie_refresh_action(true, Some(&ProviderError::Other("network down".into()))),
+            CookieRefreshAction::GiveUp
+        );
+    }
+
+    #[test]
+    fn is_cookie_auth_failure_only_auth_required() {
+        assert!(is_cookie_authentication_failure(
+            &ProviderError::AuthRequired
+        ));
+        assert!(!is_cookie_authentication_failure(&ProviderError::NoCookies));
+    }
+
+    #[test]
+    fn billing_snapshot_leaves_window_minutes_unset() {
+        // A monthly quota with six days left must not be reported as weekly.
+        let resets = Utc::now() + chrono::Duration::days(6);
+        let result = result_from_billing(
+            GrokBillingSnapshot {
+                used_percent: 12.0,
+                resets_at: Some(resets),
+            },
+            "web",
+            None,
+            None,
+            Some("SuperGrok".into()),
+        );
+        assert_eq!(result.usage.primary.window_minutes, None);
+        assert_eq!(result.usage.primary.resets_at, Some(resets));
+        assert_eq!(result.usage.login_method.as_deref(), Some("SuperGrok"));
     }
 }

@@ -155,7 +155,13 @@ fn apply_provider_order_ignores_unknown_ids() {
 
 #[test]
 fn provider_summaries_reflect_settings_order() {
-    let canonical_len = codexbar::core::ProviderId::all().len();
+    // Deprecated providers (KimiK2, CrossModel) are soft-removed from the
+    // Settings catalog unless already enabled, so the default Settings
+    // surface omits them (upstream #2254).
+    let canonical_len = codexbar::core::ProviderId::all()
+        .iter()
+        .filter(|p| !p.is_deprecated())
+        .count();
     let s = Settings::default();
     let summaries: Vec<ProviderSummary> = super::build_provider_summaries(&s);
     assert_eq!(summaries.len(), canonical_len);
@@ -953,11 +959,8 @@ fn claude_cli_parse_failure_keeps_last_good_every_time() {
         ProviderId::Claude,
         err.clone(),
     );
-    let second = super::providers::preserve_last_good_transient_failure(
-        &mut state,
-        ProviderId::Claude,
-        err,
-    );
+    let second =
+        super::providers::preserve_last_good_transient_failure(&mut state, ProviderId::Claude, err);
 
     assert_eq!(first.error, None);
     assert_eq!(first.primary.used_percent, 17.0);
@@ -979,16 +982,14 @@ fn claude_hard_credentials_missing_does_not_preserve_stale() {
     let err = ProviderUsageSnapshot::from_error(
         ProviderId::Claude,
         &metadata,
-        "OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate.".to_string(),
+        "OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate."
+            .to_string(),
     );
     let mut state = crate::state::AppState::new();
     state.provider_cache.push(good);
 
-    let out = super::providers::preserve_last_good_transient_failure(
-        &mut state,
-        ProviderId::Claude,
-        err,
-    );
+    let out =
+        super::providers::preserve_last_good_transient_failure(&mut state, ProviderId::Claude, err);
     assert!(out.error.is_some());
 }
 
@@ -1178,6 +1179,23 @@ fn region_options_for_regional_provider() {
 }
 
 #[test]
+fn alibaba_token_plan_region_options() {
+    let opts = super::region_options_for("alibabatokenplan");
+    let values: Vec<_> = opts.iter().map(|o| o.value.as_str()).collect();
+    let labels: Vec<_> = opts.iter().map(|o| o.label.as_str()).collect();
+    assert_eq!(values, vec!["cn", "intl", "cn-personal", "intl-personal"]);
+    assert_eq!(
+        labels,
+        vec![
+            "China Team",
+            "International Team",
+            "China Personal/Solo",
+            "International Personal/Solo"
+        ]
+    );
+}
+
+#[test]
 fn minimax_region_options_match_upstream_hosts() {
     let opts = super::region_options_for("minimax");
     let values: Vec<_> = opts.iter().map(|o| o.value.as_str()).collect();
@@ -1290,7 +1308,16 @@ fn bootstrap_payload_exposes_every_provider_variant() {
         );
     }
 
-    for provider in ProviderId::all() {
+    // Deprecated providers (KimiK2, CrossModel) are soft-removed from the
+    // desktop catalog unless already enabled (upstream #2254); they are
+    // intentionally absent from the default bootstrap payload.
+    let active: Vec<ProviderId> = ProviderId::all()
+        .iter()
+        .copied()
+        .filter(|p| !p.is_deprecated())
+        .collect();
+
+    for provider in &active {
         let expected = provider.cli_name().to_string();
         assert!(
             catalog_ids.contains(&expected),
@@ -1300,8 +1327,8 @@ fn bootstrap_payload_exposes_every_provider_variant() {
 
     assert_eq!(
         catalog_ids.len(),
-        ProviderId::all().len(),
-        "bootstrap catalog size drifted from ProviderId::all()"
+        active.len(),
+        "bootstrap catalog size drifted from the active (non-deprecated) providers"
     );
 
     // Sanity — payload must also round-trip through JSON cleanly so

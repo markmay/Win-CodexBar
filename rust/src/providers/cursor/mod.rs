@@ -30,7 +30,8 @@ impl CursorProvider {
                 session_label: "Plan",
                 weekly_label: "Auto",
                 supports_opus: false,
-                supports_credits: true,
+                // Upstream #2338: Cursor has no account credit balance to advertise.
+                supports_credits: false,
                 default_enabled: true,
                 is_primary: false,
                 dashboard_url: Some("https://cursor.com/dashboard/usage"),
@@ -83,7 +84,10 @@ impl CursorProvider {
     /// Fetch usage using the desktop app's local access token (Bearer auth).
     /// Mirrors the Codex/Claude pattern of reading a locally stored credential
     /// instead of scraping browser cookies.
-    async fn fetch_token_usage(&self) -> Result<ProviderFetchResult, ProviderError> {
+    async fn fetch_token_usage(
+        &self,
+        include_credits: bool,
+    ) -> Result<ProviderFetchResult, ProviderError> {
         let creds = token::read_credentials()?;
         let (primary, secondary, model_specific, cost, email, plan_type) = self
             .api
@@ -94,7 +98,13 @@ impl CursorProvider {
         // omits it; usage/plan/cost all come from the usage-summary response.
         let usage =
             Self::build_usage_snapshot(primary, secondary, model_specific, email, plan_type, None);
-        Ok(Self::build_fetch_result(usage, cost, "oauth", None))
+        Ok(Self::build_fetch_result(
+            usage,
+            cost,
+            "oauth",
+            None,
+            include_credits,
+        ))
     }
 
     /// Fetch usage via the browser-cookie web path.
@@ -117,6 +127,7 @@ impl CursorProvider {
                     cost,
                     "web",
                     token_report.as_ref(),
+                    ctx.include_credits,
                 ))
             }
             Err(e) => {
@@ -160,10 +171,17 @@ impl CursorProvider {
         cost: Option<CostSnapshot>,
         source: &str,
         token_report: Option<&token_cost::CursorTokenCostReport>,
+        include_credits: bool,
     ) -> ProviderFetchResult {
-        let cost = token_report
-            .and_then(|r| r.merge_into_cost(cost.clone()))
-            .or(cost);
+        // On-demand / plan cost follows the shared optional-usage setting
+        // (`FetchContext.include_credits` ↔ upstream showOptionalCreditsAndExtraUsage).
+        let cost = if include_credits {
+            token_report
+                .and_then(|r| r.merge_into_cost(cost.clone()))
+                .or(cost)
+        } else {
+            None
+        };
         let mut result = ProviderFetchResult::new(usage, source);
         if let Some(c) = cost {
             result = result.with_cost(c);
@@ -193,10 +211,10 @@ impl Provider for CursorProvider {
 
         match ctx.source_mode {
             // Read the desktop app's local access token and use Bearer auth.
-            SourceMode::OAuth => self.fetch_token_usage().await,
+            SourceMode::OAuth => self.fetch_token_usage(ctx.include_credits).await,
             // Prefer the local token; fall back to browser cookies when Cursor
             // isn't installed/signed in so browser-only users still work.
-            SourceMode::Auto => match self.fetch_token_usage().await {
+            SourceMode::Auto => match self.fetch_token_usage(ctx.include_credits).await {
                 Ok(result) => Ok(result),
                 Err(token_err) => {
                     tracing::debug!(
@@ -276,6 +294,36 @@ mod tests {
                 ProviderError::NotInstalled(_) | ProviderError::AuthRequired
             ),
             "expected missing-token style error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn does_not_advertise_unsupported_credits() {
+        let provider = CursorProvider::new();
+        assert!(!provider.metadata().supports_credits);
+    }
+
+    #[test]
+    fn on_demand_cost_follows_include_credits_setting() {
+        let usage = UsageSnapshot::new(RateWindow::new(16.0));
+        let cost = CostSnapshot::new(3.5, "USD", "On-demand (billing cycle)").with_limit(10.0);
+
+        let shown = CursorProvider::build_fetch_result(
+            usage.clone(),
+            Some(cost.clone()),
+            "web",
+            None,
+            true,
+        );
+        assert!(
+            shown.cost.is_some(),
+            "include_credits=true keeps on-demand cost"
+        );
+
+        let hidden = CursorProvider::build_fetch_result(usage, Some(cost), "web", None, false);
+        assert!(
+            hidden.cost.is_none(),
+            "include_credits=false hides on-demand extra usage"
         );
     }
 }
