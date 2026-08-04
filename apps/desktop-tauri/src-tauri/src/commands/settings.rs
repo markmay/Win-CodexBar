@@ -11,11 +11,13 @@ pub struct SettingsUpdate {
     pub refresh_interval_secs: Option<u64>,
     pub adaptive_refresh: Option<bool>,
     pub refresh_all_providers_on_menu_open: Option<bool>,
+    pub low_power_mode: Option<bool>,
     pub start_at_login: Option<bool>,
     pub start_minimized: Option<bool>,
     pub show_notifications: Option<bool>,
     pub sound_enabled: Option<bool>,
-    pub sound_volume: Option<u8>,
+    pub notification_sound_theme: Option<codexbar::settings::NotificationSoundTheme>,
+    pub notification_sound_paths: Option<codexbar::settings::NotificationSoundPaths>,
     pub high_usage_threshold: Option<f64>,
     pub critical_usage_threshold: Option<f64>,
     pub provider_usage_thresholds:
@@ -65,16 +67,24 @@ pub struct SettingsUpdate {
     pub float_bar_show_reset_inline: Option<bool>,
     pub float_bar_show_cost: Option<bool>,
     pub promote_tray_icon: Option<bool>,
+    pub claude_daily_routines_usage_visible: Option<bool>,
+    pub alibaba_token_plan_region: Option<String>,
+    pub weekly_progress_work_days: Option<u8>,
 }
 
 impl SettingsUpdate {
     fn refreshes_provider_data(&self) -> bool {
         self.enabled_providers.is_some()
+            || self.claude_daily_routines_usage_visible.is_some()
+            || self.alibaba_token_plan_region.is_some()
+            || self.weekly_progress_work_days.is_some()
     }
 
     fn notifies_float_bar(&self) -> bool {
         self.enabled_providers.is_some()
             || self.refresh_interval_secs.is_some()
+            || self.low_power_mode.is_some()
+            || self.adaptive_refresh.is_some()
             || self.codex_custom_sessions_dirs.is_some()
             || self.high_usage_threshold.is_some()
             || self.critical_usage_threshold.is_some()
@@ -136,6 +146,9 @@ impl SettingsUpdate {
         }
         if let Some(v) = self.refresh_all_providers_on_menu_open {
             settings.refresh_all_providers_on_menu_open = v;
+        }
+        if let Some(v) = self.low_power_mode {
+            settings.low_power_mode = v;
         }
         if let Some(ref s) = self.tray_icon_mode
             && let Some(mode) = parse_tray_icon_mode(s)
@@ -206,15 +219,23 @@ impl SettingsUpdate {
         self
     }
 
-    fn apply_notification_settings(self, settings: &mut Settings) -> Self {
+    fn apply_notification_settings(self, settings: &mut Settings) -> Result<Self, String> {
         if let Some(v) = self.show_notifications {
             settings.show_notifications = v;
         }
         if let Some(v) = self.sound_enabled {
             settings.sound_enabled = v;
         }
-        if let Some(v) = self.sound_volume {
-            settings.sound_volume = v;
+        if let Some(v) = self.notification_sound_theme {
+            settings.notification_sound_theme = v;
+        }
+        if let Some(v) = self.notification_sound_paths.clone() {
+            codexbar::sound::validate_custom_sound_path_updates(
+                &settings.notification_sound_paths,
+                &v,
+            )
+            .map_err(|error| error.to_string())?;
+            settings.notification_sound_paths = v;
         }
         if let Some(v) = self.high_usage_threshold {
             settings.high_usage_threshold = v.clamp(0.0, 100.0);
@@ -229,7 +250,7 @@ impl SettingsUpdate {
         if let Some(v) = self.predictive_pace_warning_enabled {
             settings.predictive_pace_warning_enabled = v;
         }
-        self
+        Ok(self)
     }
 
     fn apply_advanced_settings(self, settings: &mut Settings) -> Self {
@@ -292,6 +313,19 @@ impl SettingsUpdate {
                 settings.set_claude_avoid_keychain_prompts(true);
             }
         }
+        if let Some(v) = self.claude_daily_routines_usage_visible {
+            settings.claude_daily_routines_usage_visible = v;
+        }
+        if let Some(v) = self.alibaba_token_plan_region.as_deref() {
+            let region = codexbar::providers::AlibabaTokenPlanRegion::from_settings_value(Some(v));
+            settings.set_api_region(
+                codexbar::core::ProviderId::AlibabaTokenPlan,
+                region.as_str(),
+            );
+        }
+        if let Some(v) = self.weekly_progress_work_days {
+            settings.weekly_progress_work_days = if (2..=6).contains(&v) { Some(v) } else { None };
+        }
         self
     }
 
@@ -315,7 +349,7 @@ impl SettingsUpdate {
         self.apply_provider_settings(settings)
             .apply_general_settings(settings)?
             .apply_display_settings(settings)
-            .apply_notification_settings(settings)
+            .apply_notification_settings(settings)?
             .apply_advanced_settings(settings);
         float_bar_patch.apply(settings);
         Ok(float_bar_patch)
@@ -525,5 +559,41 @@ mod tests {
         }
         .apply_display_settings(&mut settings);
         assert_eq!(settings.tray_scale_percent, 100);
+    }
+
+    #[test]
+    fn apply_notification_settings_updates_sound() {
+        let mut settings = Settings::default();
+
+        SettingsUpdate {
+            notification_sound_theme: Some(codexbar::settings::NotificationSoundTheme::CodexBar),
+            ..Default::default()
+        }
+        .apply_notification_settings(&mut settings)
+        .expect("apply sound theme");
+
+        assert_eq!(
+            settings.notification_sound_theme,
+            codexbar::settings::NotificationSoundTheme::CodexBar
+        );
+    }
+
+    #[test]
+    fn apply_notification_settings_rejects_invalid_custom_sound() {
+        let mut settings = Settings::default();
+        let result = SettingsUpdate {
+            notification_sound_paths: Some(codexbar::settings::NotificationSoundPaths {
+                high_usage: Some("relative.wav".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .apply_notification_settings(&mut settings);
+
+        assert!(result.is_err());
+        assert_eq!(
+            settings.notification_sound_paths,
+            codexbar::settings::NotificationSoundPaths::default()
+        );
     }
 }

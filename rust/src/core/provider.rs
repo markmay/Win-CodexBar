@@ -75,6 +75,10 @@ pub enum ProviderId {
     ClinePass,
     LongCat,
     Neuralwatt,
+    ZoomMate,
+    QwenCloud,
+    Notion,
+    Xai,
 }
 
 impl ProviderId {
@@ -145,6 +149,10 @@ impl ProviderId {
             ProviderId::ClinePass,
             ProviderId::LongCat,
             ProviderId::Neuralwatt,
+            ProviderId::ZoomMate,
+            ProviderId::QwenCloud,
+            ProviderId::Notion,
+            ProviderId::Xai,
         ]
     }
 
@@ -215,6 +223,10 @@ impl ProviderId {
             ProviderId::ClinePass => "clinepass",
             ProviderId::LongCat => "longcat",
             ProviderId::Neuralwatt => "neuralwatt",
+            ProviderId::ZoomMate => "zoommate",
+            ProviderId::QwenCloud => "qwen-cloud",
+            ProviderId::Notion => "notion",
+            ProviderId::Xai => "xai",
         }
     }
 
@@ -287,6 +299,10 @@ impl ProviderId {
             ProviderId::ClinePass => "ClinePass",
             ProviderId::LongCat => "LongCat",
             ProviderId::Neuralwatt => "Neuralwatt",
+            ProviderId::ZoomMate => "ZoomMate",
+            ProviderId::QwenCloud => "Qwen Cloud",
+            ProviderId::Notion => "Notion AI",
+            ProviderId::Xai => "xAI",
         }
     }
 
@@ -362,6 +378,10 @@ impl ProviderId {
             ProviderId::ZenMux => None,
             ProviderId::ClinePass => None,
             ProviderId::Neuralwatt => None,
+            ProviderId::ZoomMate => Some("zoommate.zoom.us"),
+            ProviderId::QwenCloud => Some("qwencloud.com"),
+            ProviderId::Notion => Some("app.notion.com"),
+            ProviderId::Xai => None,
         }
     }
 
@@ -394,7 +414,7 @@ impl ProviderId {
             "jetbrains" | "jetbrains-ai" | "jetbrains ai" | "intellij" => {
                 Some(ProviderId::JetBrains)
             }
-            "alibaba" | "tongyi" | "qianwen" | "qwen" => Some(ProviderId::Alibaba),
+            "alibaba" | "tongyi" | "qianwen" => Some(ProviderId::Alibaba),
             "alibabatokenplan" | "alibaba-token-plan" | "alibaba token plan" | "alibaba-token"
             | "bailian-token-plan" => Some(ProviderId::AlibabaTokenPlan),
             "nanogpt" | "nano-gpt" => Some(ProviderId::NanoGPT),
@@ -422,7 +442,8 @@ impl ProviderId {
             "openaiapi" | "openai-api" | "openai api" | "openai-balance" => {
                 Some(ProviderId::OpenAIApi)
             }
-            "grok" | "xai" | "x.ai" | "supergrok" | "super-grok" => Some(ProviderId::Grok),
+            "grok" | "supergrok" | "super-grok" => Some(ProviderId::Grok),
+            "xai" | "x.ai" | "x-ai" => Some(ProviderId::Xai),
             "elevenlabs" | "eleven-labs" | "11labs" => Some(ProviderId::ElevenLabs),
             "deepgram" | "dg" => Some(ProviderId::Deepgram),
             "groq" | "groqcloud" | "groq-cloud" | "groq cloud" => Some(ProviderId::Groq),
@@ -443,6 +464,11 @@ impl ProviderId {
             "clinepass" | "cline-pass" | "cline" => Some(ProviderId::ClinePass),
             "longcat" | "long-cat" | "lc" => Some(ProviderId::LongCat),
             "neuralwatt" | "neural-watt" | "nw" | "neural" => Some(ProviderId::Neuralwatt),
+            "qwen-cloud" | "qwencloud" | "qwen" | "qwen-token-plan" | "qwen cloud" => {
+                Some(ProviderId::QwenCloud)
+            }
+            "zoommate" | "zoom-mate" | "zoom mate" => Some(ProviderId::ZoomMate),
+            "notion" | "notion-ai" | "notionai" | "notion ai" => Some(ProviderId::Notion),
             _ => None,
         }
     }
@@ -655,7 +681,9 @@ pub fn cli_name_map() -> HashMap<&'static str, ProviderId> {
     map.insert("aws bedrock", ProviderId::Bedrock);
     map.insert("tongyi", ProviderId::Alibaba);
     map.insert("qianwen", ProviderId::Alibaba);
-    map.insert("qwen", ProviderId::Alibaba);
+    map.insert("qwen", ProviderId::QwenCloud);
+    map.insert("qwencloud", ProviderId::QwenCloud);
+    map.insert("qwen-token-plan", ProviderId::QwenCloud);
     map.insert("infini-ai", ProviderId::Infini);
     map.insert("pplx", ProviderId::Perplexity);
     map.insert("abacus-ai", ProviderId::Abacus);
@@ -669,7 +697,8 @@ pub fn cli_name_map() -> HashMap<&'static str, ProviderId> {
     map.insert("step-fun", ProviderId::StepFun);
     map.insert("openai-api", ProviderId::OpenAIApi);
     map.insert("openai-balance", ProviderId::OpenAIApi);
-    map.insert("xai", ProviderId::Grok);
+    map.insert("xai", ProviderId::Xai);
+    map.insert("x.ai", ProviderId::Xai);
     map.insert("supergrok", ProviderId::Grok);
     map.insert("eleven-labs", ProviderId::ElevenLabs);
     map.insert("11labs", ProviderId::ElevenLabs);
@@ -683,6 +712,8 @@ pub fn cli_name_map() -> HashMap<&'static str, ProviderId> {
     map.insert("cross-model", ProviderId::CrossModel);
     map.insert("sakana-ai", ProviderId::Sakana);
     map.insert("sub-2-api", ProviderId::Sub2Api);
+    map.insert("notion-ai", ProviderId::Notion);
+    map.insert("notionai", ProviderId::Notion);
     map
 }
 
@@ -693,7 +724,7 @@ mod tests {
     #[test]
     fn test_provider_id_all() {
         let all = ProviderId::all();
-        assert_eq!(all.len(), 64);
+        assert_eq!(all.len(), 68);
         assert!(all.contains(&ProviderId::Claude));
         assert!(all.contains(&ProviderId::Codex));
         assert!(all.contains(&ProviderId::Kimi));
@@ -738,6 +769,10 @@ mod tests {
         assert!(all.contains(&ProviderId::ClinePass));
         assert!(all.contains(&ProviderId::LongCat));
         assert!(all.contains(&ProviderId::Neuralwatt));
+        assert!(all.contains(&ProviderId::ZoomMate));
+        assert!(all.contains(&ProviderId::QwenCloud));
+        assert!(all.contains(&ProviderId::Notion));
+        assert!(all.contains(&ProviderId::Xai));
     }
 
     #[test]
@@ -746,17 +781,12 @@ mod tests {
         assert!(ProviderId::CrossModel.is_deprecated());
         assert!(!ProviderId::Kimi.is_deprecated());
         assert!(!ProviderId::AiAnd.is_deprecated());
-        assert!(
-            ProviderId::KimiK2
-                .display_name()
-                .contains("(removed)")
+        assert!(ProviderId::KimiK2.display_name().contains("(removed)"));
+        assert!(ProviderId::CrossModel.display_name().contains("(removed)"));
+        assert_eq!(
+            ProviderId::from_cli_name("kimik2"),
+            Some(ProviderId::KimiK2)
         );
-        assert!(
-            ProviderId::CrossModel
-                .display_name()
-                .contains("(removed)")
-        );
-        assert_eq!(ProviderId::from_cli_name("kimik2"), Some(ProviderId::KimiK2));
         assert_eq!(
             ProviderId::from_cli_name("crossmodel"),
             Some(ProviderId::CrossModel)
@@ -906,6 +936,73 @@ mod tests {
             ProviderId::from_cli_name("qianwen"),
             Some(ProviderId::Alibaba)
         );
-        assert_eq!(ProviderId::from_cli_name("qwen"), Some(ProviderId::Alibaba));
+    }
+
+    #[test]
+    fn test_provider_id_qwen_cloud() {
+        assert_eq!(ProviderId::QwenCloud.cli_name(), "qwen-cloud");
+        assert_eq!(ProviderId::QwenCloud.display_name(), "Qwen Cloud");
+        assert_eq!(ProviderId::QwenCloud.cookie_domain(), Some("qwencloud.com"));
+        assert_eq!(
+            ProviderId::from_cli_name("qwen-cloud"),
+            Some(ProviderId::QwenCloud)
+        );
+        assert_eq!(
+            ProviderId::from_cli_name("qwencloud"),
+            Some(ProviderId::QwenCloud)
+        );
+        assert_eq!(
+            ProviderId::from_cli_name("qwen"),
+            Some(ProviderId::QwenCloud)
+        );
+        assert_eq!(
+            ProviderId::from_cli_name("qwen-token-plan"),
+            Some(ProviderId::QwenCloud)
+        );
+        assert_eq!(
+            ProviderId::from_cli_name("qwen cloud"),
+            Some(ProviderId::QwenCloud)
+        );
+        // Bare "qwen" must not resolve to Alibaba Coding Plan.
+        assert_ne!(ProviderId::from_cli_name("qwen"), Some(ProviderId::Alibaba));
+    }
+
+    #[test]
+    fn test_provider_id_notion() {
+        assert_eq!(ProviderId::Notion.cli_name(), "notion");
+        assert_eq!(ProviderId::Notion.display_name(), "Notion AI");
+        assert_eq!(ProviderId::Notion.cookie_domain(), Some("app.notion.com"));
+        assert_eq!(
+            ProviderId::from_cli_name("notion"),
+            Some(ProviderId::Notion)
+        );
+        assert_eq!(
+            ProviderId::from_cli_name("notion-ai"),
+            Some(ProviderId::Notion)
+        );
+        assert_eq!(
+            ProviderId::from_cli_name("notionai"),
+            Some(ProviderId::Notion)
+        );
+        assert_eq!(
+            ProviderId::from_cli_name("notion ai"),
+            Some(ProviderId::Notion)
+        );
+    }
+
+    #[test]
+    fn test_provider_id_xai() {
+        assert_eq!(ProviderId::Xai.cli_name(), "xai");
+        assert_eq!(ProviderId::Xai.display_name(), "xAI");
+        assert_eq!(ProviderId::Xai.cookie_domain(), None);
+        assert_eq!(ProviderId::from_cli_name("xai"), Some(ProviderId::Xai));
+        assert_eq!(ProviderId::from_cli_name("x.ai"), Some(ProviderId::Xai));
+        assert_eq!(ProviderId::from_cli_name("x-ai"), Some(ProviderId::Xai));
+        // Grok keeps consumer aliases; xai is the developer-platform provider.
+        assert_eq!(ProviderId::from_cli_name("grok"), Some(ProviderId::Grok));
+        assert_eq!(
+            ProviderId::from_cli_name("supergrok"),
+            Some(ProviderId::Grok)
+        );
     }
 }

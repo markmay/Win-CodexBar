@@ -131,16 +131,6 @@ pub struct WorkAreaRect {
 }
 
 #[tauri::command]
-pub fn is_remote_session() -> Result<bool, String> {
-    Ok(codexbar::host::session::is_ssh_session() || codexbar::host::session::is_remote_session())
-}
-
-#[tauri::command]
-pub fn get_launch_block_reason() -> Result<Option<String>, String> {
-    Ok(codexbar::host::session::current_launch_block_reason().map(|s| s.to_string()))
-}
-
-#[tauri::command]
 pub fn get_work_area_rect(app: tauri::AppHandle) -> Result<WorkAreaRect, String> {
     use tauri::Manager;
 
@@ -181,11 +171,12 @@ pub fn get_work_area_rect(app: tauri::AppHandle) -> Result<WorkAreaRect, String>
 // ── Misc UX ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn play_notification_sound() -> Result<(), String> {
-    // Use the shared sound helper, honouring the user's `sound_enabled` flag.
+pub fn play_notification_sound(
+    event: codexbar::sound::NotificationSoundEvent,
+) -> Result<(), String> {
+    // Preview through the same settings resolution path used by real notifications.
     let settings = Settings::load();
-    codexbar::sound::play_alert(codexbar::sound::AlertSound::Success, &settings);
-    Ok(())
+    codexbar::sound::play_alert(event, &settings).map_err(|error| error.to_string())
 }
 
 /// Reposition the flyout window so its bottom-right corner stays anchored to

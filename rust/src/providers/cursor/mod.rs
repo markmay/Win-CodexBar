@@ -1,18 +1,23 @@
 //! Cursor provider implementation
 //!
-//! Fetches usage data from Cursor's API using browser cookies
+//! Fetches usage data from Cursor's API, preferring the desktop app's locally
+//! stored access token and falling back to browser cookies.
 
 mod api;
+mod token;
 mod token_cost;
 
 use async_trait::async_trait;
 
 use crate::core::{
-    CostSnapshot, FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId,
-    ProviderMetadata, RateWindow, SourceMode, UsageSnapshot,
+    FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId, ProviderMetadata,
+    SourceMode, UsageSnapshot,
 };
 
-pub use api::CursorApi;
+use api::{CursorApi, CursorUsage};
+use token_cost::CursorTokenCostReport;
+
+const COOKIE_DOMAINS: [&str; 2] = ["cursor.com", "cursor.sh"];
 
 /// Cursor provider for fetching AI usage limits
 pub struct CursorProvider {
@@ -29,7 +34,8 @@ impl CursorProvider {
                 session_label: "Plan",
                 weekly_label: "Auto",
                 supports_opus: false,
-                supports_credits: true,
+                // Upstream #2338: Cursor has no account credit balance to advertise.
+                supports_credits: false,
                 default_enabled: true,
                 is_primary: false,
                 dashboard_url: Some("https://cursor.com/dashboard/usage"),
@@ -39,86 +45,102 @@ impl CursorProvider {
         }
     }
 
+    /// Fetch usage using the desktop app's local access token (Bearer auth).
+    /// Mirrors the Codex/Claude pattern of reading a locally stored credential
+    /// instead of scraping browser cookies.
+    async fn fetch_token_usage(
+        &self,
+        include_credits: bool,
+    ) -> Result<ProviderFetchResult, ProviderError> {
+        let creds = token::read_credentials()?;
+        let usage = self
+            .api
+            .fetch_usage_with_bearer_token(&creds.access_token, creds.email)
+            .await?;
+
+        // The token-cost dashboard page is cookie-gated, so the Bearer path
+        // omits it; usage/plan/cost all come from the usage-summary response.
+        Ok(Self::build_fetch_result(
+            usage,
+            "oauth",
+            None,
+            include_credits,
+        ))
+    }
+
+    /// Fetch usage via the browser-cookie web path.
     async fn fetch_web_usage(
         &self,
         ctx: &FetchContext,
-    ) -> Result<
-        (
-            api::CursorUsageResult,
-            Option<token_cost::CursorTokenCostReport>,
-        ),
-        ProviderError,
-    > {
-        let cookie_header = if let Some(cookie_header) = ctx.manual_cookie_header.as_deref() {
-            cookie_header.to_string()
-        } else {
-            crate::providers::browser_cookie_header(&["cursor.com", "cursor.sh"])?
+    ) -> Result<ProviderFetchResult, ProviderError> {
+        let cookie_header = match ctx.manual_cookie_header.as_deref() {
+            Some(header) => header.to_string(),
+            None => crate::providers::browser_cookie_header(&COOKIE_DOMAINS)?,
         };
 
         let usage = self
             .api
             .fetch_usage_with_cookie_header(&cookie_header)
-            .await?;
+            .await
+            .inspect_err(|e| tracing::warn!("Cursor API fetch failed: {e}"))?;
 
         // Best-effort token-cost page; never fail the main usage fetch.
-        let token_report = match token_cost::fetch_token_cost_report(
+        let token_report = token_cost::fetch_token_cost_report(
             self.api.client(),
             &cookie_header,
             Some(token_cost::default_since()),
             Some(chrono::Utc::now()),
         )
         .await
-        {
-            Ok(report) => Some(report),
-            Err(err) => {
-                tracing::debug!("Cursor token-cost events unavailable: {err}");
-                None
-            }
-        };
+        .inspect_err(|err| tracing::debug!("Cursor token-cost events unavailable: {err}"))
+        .ok();
 
-        Ok((usage, token_report))
-    }
-
-    fn build_usage_snapshot(
-        primary: RateWindow,
-        secondary: Option<RateWindow>,
-        model_specific: Option<RateWindow>,
-        email: Option<String>,
-        plan_type: Option<String>,
-        token_report: Option<&token_cost::CursorTokenCostReport>,
-    ) -> UsageSnapshot {
-        let mut usage = UsageSnapshot::new(primary);
-        if let Some(sec) = secondary {
-            usage = usage.with_secondary(sec);
-        }
-        if let Some(ms) = model_specific {
-            usage = usage.with_model_specific(ms);
-        }
-        if let Some(e) = email {
-            usage = usage.with_email(e);
-        }
-        if let Some(plan) = plan_type {
-            usage = usage.with_login_method(plan);
-        }
-        if let Some(report) = token_report {
-            for window in report.to_extra_windows() {
-                usage.extra_rate_windows.push(window);
-            }
-        }
-        usage
+        Ok(Self::build_fetch_result(
+            usage,
+            "web",
+            token_report.as_ref(),
+            ctx.include_credits,
+        ))
     }
 
     fn build_fetch_result(
-        usage: UsageSnapshot,
-        cost: Option<CostSnapshot>,
-        token_report: Option<&token_cost::CursorTokenCostReport>,
+        usage: CursorUsage,
+        source: &str,
+        token_report: Option<&CursorTokenCostReport>,
+        include_credits: bool,
     ) -> ProviderFetchResult {
-        let cost = token_report
-            .and_then(|r| r.merge_into_cost(cost.clone()))
-            .or(cost);
-        let mut result = ProviderFetchResult::new(usage, "web");
-        if let Some(c) = cost {
-            result = result.with_cost(c);
+        // On-demand / plan cost follows the shared optional-usage setting
+        // (`FetchContext.include_credits` ↔ upstream showOptionalCreditsAndExtraUsage).
+        let cost = if include_credits {
+            token_report
+                .and_then(|r| r.merge_into_cost(usage.cost.clone()))
+                .or(usage.cost)
+        } else {
+            None
+        };
+
+        let mut snapshot = UsageSnapshot::new(usage.primary);
+        if let Some(secondary) = usage.secondary {
+            snapshot = snapshot.with_secondary(secondary);
+        }
+        if let Some(model_specific) = usage.model_specific {
+            snapshot = snapshot.with_model_specific(model_specific);
+        }
+        if let Some(email) = usage.email {
+            snapshot = snapshot.with_email(email);
+        }
+        if let Some(plan) = usage.plan_type {
+            snapshot = snapshot.with_login_method(plan);
+        }
+        if let Some(report) = token_report {
+            snapshot
+                .extra_rate_windows
+                .extend(report.to_extra_windows());
+        }
+
+        let mut result = ProviderFetchResult::new(snapshot, source);
+        if let Some(cost) = cost {
+            result = result.with_cost(cost);
         }
         result
     }
@@ -141,44 +163,31 @@ impl Provider for CursorProvider {
     }
 
     async fn fetch_usage(&self, ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
-        tracing::debug!("Fetching Cursor usage via web API");
+        tracing::debug!("Fetching Cursor usage");
 
         match ctx.source_mode {
-            // Cli is only ever set by the shell for "no cookie yet"; treat it as
-            // web so empty-manual users get browser cookie attempt (or AuthRequired)
-            // instead of "Source mode 'Cli' not supported" (#212).
-            SourceMode::Auto | SourceMode::Web | SourceMode::Cli => {
-                match self.fetch_web_usage(ctx).await {
-                    Ok((
-                        (primary, secondary, model_specific, cost, email, plan_type),
-                        token_report,
-                    )) => {
-                        let usage = Self::build_usage_snapshot(
-                            primary,
-                            secondary,
-                            model_specific,
-                            email,
-                            plan_type,
-                            token_report.as_ref(),
-                        );
-                        Ok(Self::build_fetch_result(
-                            usage,
-                            cost,
-                            token_report.as_ref(),
-                        ))
-                    }
-                    Err(e) => {
-                        tracing::warn!("Cursor API fetch failed: {}", e);
-                        Err(e)
-                    }
+            // Read the desktop app's local access token and use Bearer auth.
+            SourceMode::OAuth => self.fetch_token_usage(ctx.include_credits).await,
+            // Prefer the local token; fall back to browser cookies when Cursor
+            // isn't installed/signed in so browser-only users still work.
+            SourceMode::Auto => match self.fetch_token_usage(ctx.include_credits).await {
+                Ok(result) => Ok(result),
+                Err(token_err) => {
+                    tracing::debug!(
+                        "Cursor token path unavailable ({token_err}); falling back to browser cookies"
+                    );
+                    self.fetch_web_usage(ctx).await
                 }
-            }
-            SourceMode::OAuth => Err(ProviderError::UnsupportedSource(ctx.source_mode)),
+            },
+            // Cli is only ever set by the shell for "no cookie yet"; treat it as
+            // web so empty-manual users get a browser cookie attempt (or
+            // AuthRequired) instead of "Source mode 'Cli' not supported" (#212).
+            SourceMode::Web | SourceMode::Cli => self.fetch_web_usage(ctx).await,
         }
     }
 
     fn available_sources(&self) -> Vec<SourceMode> {
-        vec![SourceMode::Auto, SourceMode::Web]
+        vec![SourceMode::Auto, SourceMode::OAuth, SourceMode::Web]
     }
 
     fn supports_web(&self) -> bool {
@@ -189,7 +198,7 @@ impl Provider for CursorProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FetchContext;
+    use crate::core::{CostSnapshot, FetchContext, RateWindow};
 
     #[tokio::test]
     async fn cli_mode_does_not_return_unsupported_source() {
@@ -218,13 +227,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_mode_still_unsupported() {
+    async fn oauth_mode_reads_local_token() {
+        // Point at a missing state DB so the token read fails fast (no network).
+        // SAFETY: single-threaded test setup; no other thread reads this var.
+        unsafe {
+            std::env::set_var("CURSOR_STATE_DB", "/nonexistent/cursor-state.vscdb");
+        }
         let provider = CursorProvider::new();
         let ctx = FetchContext {
             source_mode: SourceMode::OAuth,
             ..FetchContext::default()
         };
-        let err = provider.fetch_usage(&ctx).await.expect_err("oauth unsupported");
-        assert!(matches!(err, ProviderError::UnsupportedSource(SourceMode::OAuth)));
+        let err = provider.fetch_usage(&ctx).await.expect_err("no cursor db");
+        unsafe {
+            std::env::remove_var("CURSOR_STATE_DB");
+        }
+        // OAuth is a supported source backed by the local token, so the error
+        // must reflect a missing/unauthenticated token, not UnsupportedSource.
+        assert!(
+            matches!(
+                err,
+                ProviderError::NotInstalled(_) | ProviderError::AuthRequired
+            ),
+            "expected missing-token style error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn does_not_advertise_unsupported_credits() {
+        let provider = CursorProvider::new();
+        assert!(!provider.metadata().supports_credits);
+    }
+
+    #[test]
+    fn on_demand_cost_follows_include_credits_setting() {
+        let usage = || CursorUsage {
+            primary: RateWindow::new(16.0),
+            secondary: None,
+            model_specific: None,
+            cost: Some(CostSnapshot::new(3.5, "USD", "On-demand (billing cycle)").with_limit(10.0)),
+            email: None,
+            plan_type: None,
+        };
+
+        let shown = CursorProvider::build_fetch_result(usage(), "web", None, true);
+        assert!(
+            shown.cost.is_some(),
+            "include_credits=true keeps on-demand cost"
+        );
+
+        let hidden = CursorProvider::build_fetch_result(usage(), "web", None, false);
+        assert!(
+            hidden.cost.is_none(),
+            "include_credits=false hides on-demand extra usage"
+        );
     }
 }

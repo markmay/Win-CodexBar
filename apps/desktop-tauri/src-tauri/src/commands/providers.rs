@@ -47,6 +47,13 @@ pub(crate) fn build_fetch_context(
             "off" if id == ProviderId::Claude && usage_source != SourceMode::Cli => {
                 (SourceMode::OAuth, None)
             }
+            // Cursor stores a desktop JWT locally; cookie-off should still use it.
+            "off"
+                if id == ProviderId::Cursor
+                    && matches!(usage_source, SourceMode::Auto | SourceMode::OAuth) =>
+            {
+                (usage_source, None)
+            }
             "off" if has_kimi_code_api_key && usage_source == SourceMode::Auto => {
                 (SourceMode::Auto, None)
             }
@@ -55,9 +62,17 @@ pub(crate) fn build_fetch_context(
             "off" if id == ProviderId::Factory => (SourceMode::Cli, None),
             "off" => (SourceMode::Cli, None),
             "manual" => {
+                let has_token_account_cookie = active_token_cookie.is_some();
                 let cookie_header = active_token_cookie.or(stored_cookie);
                 let source_mode = if has_kimi_code_api_key && usage_source == SourceMode::Auto {
                     SourceMode::Auto
+                } else if id == ProviderId::Cursor
+                    && matches!(usage_source, SourceMode::Auto | SourceMode::OAuth)
+                    && !has_token_account_cookie
+                {
+                    // Prefer the local desktop token unless a Cursor token-account
+                    // cookie was selected (those are web session overrides).
+                    usage_source
                 } else if cookie_header.is_some() {
                     SourceMode::Web
                 } else if id == ProviderId::Claude && usage_source != SourceMode::Cli {
@@ -670,9 +685,7 @@ fn dispatch_quota_hooks(
         return;
     }
     let thresholds = settings.usage_thresholds(provider, window);
-    let account = if settings.hide_personal_info {
-        None
-    } else if account.is_empty() {
+    let account = if settings.hide_personal_info || account.is_empty() {
         None
     } else {
         Some(account)

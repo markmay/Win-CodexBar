@@ -81,11 +81,29 @@ pub fn install(app: tauri::AppHandle) {
     });
 }
 
-fn resolve_refresh_interval(settings: &Settings) -> Option<Duration> {
-    if settings.adaptive_refresh {
-        return Some(adaptive_delay_now());
+const LOW_POWER_MIN_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// Pure upstream `BackgroundWorkPowerPolicy.automaticInterval` port:
+/// floor automatic intervals to 30 minutes when low-power mode is on.
+/// `None` (manual / no timer) stays `None`.
+pub(crate) fn automatic_interval(
+    requested: Option<Duration>,
+    low_power_mode_enabled: bool,
+) -> Option<Duration> {
+    let requested = requested?;
+    if !low_power_mode_enabled {
+        return Some(requested);
     }
-    refresh_interval(settings.refresh_interval_secs)
+    Some(requested.max(LOW_POWER_MIN_INTERVAL))
+}
+
+fn resolve_refresh_interval(settings: &Settings) -> Option<Duration> {
+    let requested = if settings.adaptive_refresh {
+        Some(adaptive_delay_now())
+    } else {
+        refresh_interval(settings.refresh_interval_secs)
+    };
+    automatic_interval(requested, settings.low_power_mode)
 }
 
 fn adaptive_delay_now() -> Duration {
@@ -140,7 +158,7 @@ fn low_power_mode_enabled() -> bool {
         let low_pct = status.battery_life_percent <= 20;
         // system_status_flag bit 0x01 = Battery Saver is on (Win10+)
         let battery_saver = status.system_status_flag & 0x01 != 0;
-        return on_battery && (low_pct || battery_saver);
+        on_battery && (low_pct || battery_saver)
     }
     #[cfg(not(windows))]
     {
@@ -198,13 +216,14 @@ fn refresh_interval(seconds: u64) -> Option<Duration> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn manual_refresh_setting_disables_background_refresh() {
-        assert_eq!(refresh_interval(0), None);
-    }
+    /// Serializes tests that mutate the shared `LAST_MENU_OPEN` /
+    /// `LAST_CODING_ACTIVITY` globals so parallel `#[test]` threads can't
+    /// interpose a write between one test's clear and its read.
+    static ADAPTIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn adaptive_enabled_uses_policy_delay() {
+        let _guard = ADAPTIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Clear shared activity slots so parallel/prior tests cannot shrink the delay.
         *LAST_MENU_OPEN
             .get_or_init(|| Mutex::new(None))
@@ -215,12 +234,42 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
 
-        let mut settings = Settings::default();
-        settings.adaptive_refresh = true;
-        settings.refresh_interval_secs = 0;
+        let settings = Settings {
+            adaptive_refresh: true,
+            refresh_interval_secs: 0,
+            ..Default::default()
+        };
         let delay = resolve_refresh_interval(&settings).expect("adaptive always schedules");
         // No menu open → long idle 30m
         assert_eq!(delay, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn low_power_mode_floors_fixed_and_adaptive_intervals() {
+        assert_eq!(
+            automatic_interval(Some(Duration::from_secs(60)), true),
+            Some(Duration::from_secs(30 * 60))
+        );
+        assert_eq!(
+            automatic_interval(Some(Duration::from_secs(3600)), true),
+            Some(Duration::from_secs(3600))
+        );
+        assert_eq!(
+            automatic_interval(Some(Duration::from_secs(60)), false),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(automatic_interval(None, true), None);
+
+        let settings = Settings {
+            low_power_mode: true,
+            adaptive_refresh: false,
+            refresh_interval_secs: 300,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_refresh_interval(&settings),
+            Some(Duration::from_secs(30 * 60))
+        );
     }
 
     #[test]
@@ -257,6 +306,7 @@ mod tests {
 
     #[test]
     fn note_menu_open_sets_recent_age() {
+        let _guard = ADAPTIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         note_menu_open();
         let age = age_since(&LAST_MENU_OPEN).expect("menu open recorded");
         assert!(age < Duration::from_secs(5));

@@ -120,11 +120,21 @@ function settings(): SettingsSnapshot {
     refreshIntervalSecs: 300,
     adaptiveRefresh: false,
     refreshAllProvidersOnMenuOpen: false,
+  lowPowerMode: false,
     startAtLogin: false,
     startMinimized: false,
     showNotifications: true,
     soundEnabled: true,
-    soundVolume: 100,
+    notificationSoundTheme: "windows",
+    notificationSoundPaths: {
+      predictiveWarning: null,
+      highUsage: null,
+      criticalUsage: null,
+      exhausted: null,
+      statusIssue: null,
+      sessionDepleted: null,
+      sessionRestored: null,
+    },
     highUsageThreshold: 70,
     criticalUsageThreshold: 90,
     predictivePaceWarningEnabled: false,
@@ -163,6 +173,9 @@ function settings(): SettingsSnapshot {
     floatBarDarkText: false,
     floatBarShowResetInline: false,
     floatBarShowCost: false,
+    claudeDailyRoutinesUsageVisible: true,
+    alibabaTokenPlanRegion: "cn",
+    weeklyProgressWorkDays: null,
   };
 }
 

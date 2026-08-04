@@ -5,12 +5,11 @@ import type {
   AppInfoBridge,
   BootstrapState,
   CurrentSurfaceState,
-  ProofCommand,
-  ProofStatePayload,
   CookieInfoBridge,
   DetectedBrowserBridge,
   Language,
   LocaleStrings,
+  NotificationSoundEvent,
   ProviderCatalogEntry,
   ProviderChartData,
   ProviderDetail,
@@ -27,7 +26,6 @@ import type {
   UpdateStatePayload,
   CookieSourceOption,
   RegionOption,
-  SafeDiagnostics,
   CredentialStorageStatus,
   WorkAreaRect,
   AgentSession,
@@ -35,6 +33,7 @@ import type {
   SessionFocusResult,
   TrayVisibilityStatusDto,
   UsageSpendSummary,
+  CodexLocalProjectUsageSnapshot,
 } from "../types/bridge";
 
 export function getBootstrapState(): Promise<BootstrapState> {
@@ -105,20 +104,8 @@ export function closeSettingsWindow(): Promise<void> {
   return invoke<void>("close_settings_window");
 }
 
-export function getCurrentSurfaceMode(): Promise<SurfaceMode> {
-  return invoke<SurfaceMode>("get_current_surface_mode");
-}
-
 export function getCurrentSurfaceState(): Promise<CurrentSurfaceState> {
   return invoke<CurrentSurfaceState>("get_current_surface_state");
-}
-
-export function getProofState(): Promise<ProofStatePayload> {
-  return invoke<ProofStatePayload>("get_proof_state");
-}
-
-export function runProofCommand(command: ProofCommand): Promise<ProofStatePayload> {
-  return invoke<ProofStatePayload>("run_proof_command", { command });
 }
 
 export function refreshProviders(): Promise<void> {
@@ -131,10 +118,6 @@ export function refreshProvidersIfStale(): Promise<void> {
 
 export function getCachedProviders(): Promise<ProviderUsageSnapshot[]> {
   return invoke<ProviderUsageSnapshot[]>("get_cached_providers");
-}
-
-export function getSafeDiagnostics(): Promise<SafeDiagnostics> {
-  return invoke<SafeDiagnostics>("get_safe_diagnostics");
 }
 
 export function getWorkAreaRect(): Promise<WorkAreaRect> {
@@ -254,6 +237,16 @@ export function getUsageSpendSummary(): Promise<UsageSpendSummary> {
   return invoke<UsageSpendSummary>("get_usage_spend_summary");
 }
 
+export function getCodexWorkspacesSnapshot(options?: {
+  forceRefresh?: boolean;
+  historyDays?: number;
+}): Promise<CodexLocalProjectUsageSnapshot> {
+  return invoke<CodexLocalProjectUsageSnapshot>("get_codex_workspaces_snapshot", {
+    forceRefresh: options?.forceRefresh ?? null,
+    historyDays: options?.historyDays ?? null,
+  });
+}
+
 // ── Token account bridge ─────────────────────────────────────────────
 
 export function getTokenAccountProviders(): Promise<TokenAccountSupportBridge[]> {
@@ -367,10 +360,6 @@ export function setProviderWorkspaceId(
   return invoke<void>("set_provider_workspace_id", { providerId, workspaceId });
 }
 
-export function getProviderGatewayUrl(providerId: string): Promise<string | null> {
-  return invoke<string | null>("get_provider_gateway_url", { providerId });
-}
-
 export function setProviderGatewayUrl(
   providerId: string,
   gatewayUrl: string,
@@ -422,8 +411,8 @@ export function unregisterGlobalShortcut(): Promise<void> {
   return invoke<void>("unregister_global_shortcut");
 }
 
-export function playNotificationSound(): Promise<void> {
-  return invoke<void>("play_notification_sound");
+export function playNotificationSound(event: NotificationSoundEvent): Promise<void> {
+  return invoke<void>("play_notification_sound", { event });
 }
 
 export function reanchorTrayPanel(): Promise<void> {

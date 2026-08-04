@@ -50,6 +50,11 @@ pub struct Settings {
     #[serde(default)]
     pub refresh_all_providers_on_menu_open: bool,
 
+    /// When true, automatic background refresh is floored to once per 30 minutes.
+    /// Manual refresh stays immediate.
+    #[serde(default)]
+    pub low_power_mode: bool,
+
     /// Whether to start minimized
     pub start_minimized: bool,
 
@@ -62,8 +67,13 @@ pub struct Settings {
     /// Whether to play sound effects for threshold alerts
     pub sound_enabled: bool,
 
-    /// Sound volume for alerts (0-100)
-    pub sound_volume: u8,
+    /// Per-notification WAV files. Unassigned events use the selected sound theme.
+    #[serde(default)]
+    pub notification_sound_paths: NotificationSoundPaths,
+
+    /// Sound theme used when an event has no custom WAV file.
+    #[serde(default)]
+    pub notification_sound_theme: NotificationSoundTheme,
 
     /// High usage threshold for warnings (percentage)
     pub high_usage_threshold: f64,
@@ -255,12 +265,31 @@ pub struct Settings {
 
     /// Promote the tray icon out of the Windows hidden-icons overflow area.
     /// Only has effect on Windows 11 (build ≥ 22000); silently ignored elsewhere.
-    #[serde(default)]
+    /// Defaults on so upgrades keep the icon pinned to the taskbar notification area.
+    #[serde(default = "default_true")]
     pub promote_tray_icon: bool,
+
+    /// When true, show Claude Daily Routines usage in extras.
+    /// Defaults on to match upstream visibility.
+    #[serde(default = "default_true")]
+    pub claude_daily_routines_usage_visible: bool,
+
+    /// Optional work-week length [2,6] for session-equivalent weekly forecast.
+    /// `None` uses wall-clock time until weekly reset.
+    #[serde(default)]
+    pub weekly_progress_work_days: Option<u8>,
+
+    /// Alibaba Token Plan API region: "cn" | "intl" | "cn-personal" | "intl-personal".
+    #[serde(default = "default_alibaba_token_plan_region")]
+    pub alibaba_token_plan_region: String,
 }
 
 fn default_window_scale_percent() -> u16 {
     100
+}
+
+fn default_alibaba_token_plan_region() -> String {
+    "cn".to_string()
 }
 
 pub fn clamp_window_scale_percent(value: u16) -> u16 {
@@ -374,6 +403,7 @@ const DEFAULT_PROVIDER_SOURCE: &str = "auto";
 fn default_api_region(id: ProviderId) -> &'static str {
     match id {
         ProviderId::Alibaba => crate::providers::AlibabaRegion::Singapore.settings_value(),
+        ProviderId::AlibabaTokenPlan => "cn",
         ProviderId::Zai | ProviderId::MiniMax => "global",
         _ => "",
     }
@@ -395,11 +425,13 @@ impl Default for Settings {
             refresh_interval_secs: 300, // 5 minutes
             adaptive_refresh: false,
             refresh_all_providers_on_menu_open: false,
+            low_power_mode: false,
             start_minimized: false,
             start_at_login: false,
             show_notifications: true,
             sound_enabled: true,
-            sound_volume: 100,
+            notification_sound_paths: NotificationSoundPaths::default(),
+            notification_sound_theme: NotificationSoundTheme::default(),
             high_usage_threshold: 70.0,
             critical_usage_threshold: 90.0,
             provider_usage_thresholds: HashMap::new(),
@@ -447,7 +479,10 @@ impl Default for Settings {
             float_bar_dark_text: false,
             float_bar_show_reset_inline: false,
             float_bar_show_cost: false,
-            promote_tray_icon: false,
+            promote_tray_icon: true,
+            claude_daily_routines_usage_visible: true,
+            weekly_progress_work_days: None,
+            alibaba_token_plan_region: default_alibaba_token_plan_region(),
         }
     }
 }
@@ -475,9 +510,44 @@ impl Settings {
         #[cfg(target_os = "windows")]
         {
             settings.start_at_login = Self::sync_start_at_login_registry();
+            settings.apply_promote_tray_default_migration();
         }
 
         settings
+    }
+
+    /// Marker written after the one-shot "pin tray by default" migration (issue #237).
+    fn promote_tray_default_marker_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|p| p.join("CodexBar").join(".tray-pin-default-v1"))
+    }
+
+    /// Old builds defaulted `promote_tray_icon` to false and persisted that on any
+    /// settings save. Flip those installs to the new default once; later opt-outs
+    /// are preserved because the marker file remains.
+    fn should_migrate_promote_tray_default(
+        promote_tray_icon: bool,
+        already_migrated: bool,
+    ) -> bool {
+        !already_migrated && !promote_tray_icon
+    }
+
+    fn apply_promote_tray_default_migration(&mut self) {
+        let Some(marker) = Self::promote_tray_default_marker_path() else {
+            return;
+        };
+        let already_migrated = marker.exists();
+        if Self::should_migrate_promote_tray_default(self.promote_tray_icon, already_migrated) {
+            self.promote_tray_icon = true;
+            if let Err(error) = self.save() {
+                tracing::warn!("Failed to persist promote_tray_icon default migration: {error}");
+            }
+        }
+        if !already_migrated && let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            if let Err(error) = std::fs::write(&marker, b"1") {
+                tracing::warn!("Failed to write promote_tray_icon migration marker: {error}");
+            }
+        }
     }
 
     /// Save settings to disk
@@ -729,6 +799,9 @@ impl Settings {
 
     /// API region for `id`, or the provider-specific default if unset.
     pub fn api_region(&self, id: ProviderId) -> &str {
+        if id == ProviderId::AlibabaTokenPlan && !self.alibaba_token_plan_region.trim().is_empty() {
+            return self.alibaba_token_plan_region.as_str();
+        }
         self.provider_configs
             .get(&id)
             .and_then(|c| c.api_region.as_deref())
@@ -736,7 +809,11 @@ impl Settings {
     }
 
     pub fn set_api_region(&mut self, id: ProviderId, region: impl Into<String>) {
-        self.provider_config_mut(id).api_region = Some(region.into());
+        let region = region.into();
+        if id == ProviderId::AlibabaTokenPlan {
+            self.alibaba_token_plan_region = region.clone();
+        }
+        self.provider_config_mut(id).api_region = Some(region);
     }
 
     /// Manual cookie header for `id`, or `""` if unset.

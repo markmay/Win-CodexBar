@@ -155,7 +155,13 @@ fn apply_provider_order_ignores_unknown_ids() {
 
 #[test]
 fn provider_summaries_reflect_settings_order() {
-    let canonical_len = codexbar::core::ProviderId::all().len();
+    // Deprecated providers (KimiK2, CrossModel) are soft-removed from the
+    // Settings catalog unless already enabled, so the default Settings
+    // surface omits them (upstream #2254).
+    let canonical_len = codexbar::core::ProviderId::all()
+        .iter()
+        .filter(|p| !p.is_deprecated())
+        .count();
     let s = Settings::default();
     let summaries: Vec<ProviderSummary> = super::build_provider_summaries(&s);
     assert_eq!(summaries.len(), canonical_len);
@@ -293,12 +299,14 @@ fn fetch_context_defaults_to_manual_cookies_without_browser_import() {
         &token_accounts,
     );
 
-    // Cursor does not support Cli; empty manual cookie remaps to Web (browser attempt).
-    assert_eq!(ctx.source_mode, SourceMode::Web);
+    // Default usage_source is Auto: Cursor should try the local desktop JWT
+    // even when cookie_source stays at the default "manual".
+    assert_eq!(ctx.source_mode, SourceMode::Auto);
+    assert!(ctx.manual_cookie_header.is_none());
 }
 
 #[test]
-fn fetch_context_cursor_cookie_off_stays_cli() {
+fn fetch_context_cursor_cookie_off_uses_local_token() {
     let mut settings = Settings::default();
     settings.set_cookie_source(ProviderId::Cursor, "off");
     let cookies = ManualCookies::default();
@@ -313,9 +321,34 @@ fn fetch_context_cursor_cookie_off_stays_cli() {
         &token_accounts,
     );
 
-    // Explicit cookie-off keeps Cli (no browser scrape).
-    assert_eq!(ctx.source_mode, SourceMode::Cli);
+    // Cookie-off still allows the local SQLite token path (Auto/OAuth).
+    assert_eq!(ctx.source_mode, SourceMode::Auto);
     assert!(ctx.manual_cookie_header.is_none());
+}
+
+#[test]
+fn fetch_context_cursor_manual_cookie_still_prefers_auto_token() {
+    let mut settings = Settings::default();
+    settings.set_cookie_source(ProviderId::Cursor, "manual");
+    let mut cookies = ManualCookies::default();
+    cookies.set("cursor", "WorkosCursorSessionToken=stale");
+    let api_keys = ApiKeys::default();
+    let token_accounts = HashMap::new();
+
+    let ctx = super::build_fetch_context(
+        ProviderId::Cursor,
+        &settings,
+        &cookies,
+        &api_keys,
+        &token_accounts,
+    );
+
+    // Auto keeps the local-token-first path; manual cookie is retained for fallback.
+    assert_eq!(ctx.source_mode, SourceMode::Auto);
+    assert_eq!(
+        ctx.manual_cookie_header.as_deref(),
+        Some("WorkosCursorSessionToken=stale")
+    );
 }
 
 #[test]
@@ -377,7 +410,9 @@ fn fetch_context_claude_explicit_cli_source_still_uses_cli() {
 
 #[test]
 fn fetch_context_manual_cookie_uses_web_without_browser_import() {
-    let settings = Settings::default();
+    let mut settings = Settings::default();
+    // Explicit web usage source forces the cookie path even with a stored cookie.
+    settings.set_usage_source(ProviderId::Cursor, "web");
     let mut cookies = ManualCookies::default();
     cookies.set("cursor", "session=abc123");
     let api_keys = ApiKeys::default();
@@ -924,11 +959,8 @@ fn claude_cli_parse_failure_keeps_last_good_every_time() {
         ProviderId::Claude,
         err.clone(),
     );
-    let second = super::providers::preserve_last_good_transient_failure(
-        &mut state,
-        ProviderId::Claude,
-        err,
-    );
+    let second =
+        super::providers::preserve_last_good_transient_failure(&mut state, ProviderId::Claude, err);
 
     assert_eq!(first.error, None);
     assert_eq!(first.primary.used_percent, 17.0);
@@ -950,16 +982,14 @@ fn claude_hard_credentials_missing_does_not_preserve_stale() {
     let err = ProviderUsageSnapshot::from_error(
         ProviderId::Claude,
         &metadata,
-        "OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate.".to_string(),
+        "OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate."
+            .to_string(),
     );
     let mut state = crate::state::AppState::new();
     state.provider_cache.push(good);
 
-    let out = super::providers::preserve_last_good_transient_failure(
-        &mut state,
-        ProviderId::Claude,
-        err,
-    );
+    let out =
+        super::providers::preserve_last_good_transient_failure(&mut state, ProviderId::Claude, err);
     assert!(out.error.is_some());
 }
 
@@ -1149,6 +1179,23 @@ fn region_options_for_regional_provider() {
 }
 
 #[test]
+fn alibaba_token_plan_region_options() {
+    let opts = super::region_options_for("alibabatokenplan");
+    let values: Vec<_> = opts.iter().map(|o| o.value.as_str()).collect();
+    let labels: Vec<_> = opts.iter().map(|o| o.label.as_str()).collect();
+    assert_eq!(values, vec!["cn", "intl", "cn-personal", "intl-personal"]);
+    assert_eq!(
+        labels,
+        vec![
+            "China Team",
+            "International Team",
+            "China Personal/Solo",
+            "International Personal/Solo"
+        ]
+    );
+}
+
+#[test]
 fn minimax_region_options_match_upstream_hosts() {
     let opts = super::region_options_for("minimax");
     let values: Vec<_> = opts.iter().map(|o| o.value.as_str()).collect();
@@ -1261,7 +1308,16 @@ fn bootstrap_payload_exposes_every_provider_variant() {
         );
     }
 
-    for provider in ProviderId::all() {
+    // Deprecated providers (KimiK2, CrossModel) are soft-removed from the
+    // desktop catalog unless already enabled (upstream #2254); they are
+    // intentionally absent from the default bootstrap payload.
+    let active: Vec<ProviderId> = ProviderId::all()
+        .iter()
+        .copied()
+        .filter(|p| !p.is_deprecated())
+        .collect();
+
+    for provider in &active {
         let expected = provider.cli_name().to_string();
         assert!(
             catalog_ids.contains(&expected),
@@ -1271,8 +1327,8 @@ fn bootstrap_payload_exposes_every_provider_variant() {
 
     assert_eq!(
         catalog_ids.len(),
-        ProviderId::all().len(),
-        "bootstrap catalog size drifted from ProviderId::all()"
+        active.len(),
+        "bootstrap catalog size drifted from the active (non-deprecated) providers"
     );
 
     // Sanity — payload must also round-trip through JSON cleanly so
