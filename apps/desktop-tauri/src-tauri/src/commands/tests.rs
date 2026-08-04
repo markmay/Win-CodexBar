@@ -293,12 +293,14 @@ fn fetch_context_defaults_to_manual_cookies_without_browser_import() {
         &token_accounts,
     );
 
-    // Cursor does not support Cli; empty manual cookie remaps to Web (browser attempt).
-    assert_eq!(ctx.source_mode, SourceMode::Web);
+    // Default usage_source is Auto: Cursor should try the local desktop JWT
+    // even when cookie_source stays at the default "manual".
+    assert_eq!(ctx.source_mode, SourceMode::Auto);
+    assert!(ctx.manual_cookie_header.is_none());
 }
 
 #[test]
-fn fetch_context_cursor_cookie_off_stays_cli() {
+fn fetch_context_cursor_cookie_off_uses_local_token() {
     let mut settings = Settings::default();
     settings.set_cookie_source(ProviderId::Cursor, "off");
     let cookies = ManualCookies::default();
@@ -313,9 +315,34 @@ fn fetch_context_cursor_cookie_off_stays_cli() {
         &token_accounts,
     );
 
-    // Explicit cookie-off keeps Cli (no browser scrape).
-    assert_eq!(ctx.source_mode, SourceMode::Cli);
+    // Cookie-off still allows the local SQLite token path (Auto/OAuth).
+    assert_eq!(ctx.source_mode, SourceMode::Auto);
     assert!(ctx.manual_cookie_header.is_none());
+}
+
+#[test]
+fn fetch_context_cursor_manual_cookie_still_prefers_auto_token() {
+    let mut settings = Settings::default();
+    settings.set_cookie_source(ProviderId::Cursor, "manual");
+    let mut cookies = ManualCookies::default();
+    cookies.set("cursor", "WorkosCursorSessionToken=stale");
+    let api_keys = ApiKeys::default();
+    let token_accounts = HashMap::new();
+
+    let ctx = super::build_fetch_context(
+        ProviderId::Cursor,
+        &settings,
+        &cookies,
+        &api_keys,
+        &token_accounts,
+    );
+
+    // Auto keeps the local-token-first path; manual cookie is retained for fallback.
+    assert_eq!(ctx.source_mode, SourceMode::Auto);
+    assert_eq!(
+        ctx.manual_cookie_header.as_deref(),
+        Some("WorkosCursorSessionToken=stale")
+    );
 }
 
 #[test]
@@ -377,7 +404,9 @@ fn fetch_context_claude_explicit_cli_source_still_uses_cli() {
 
 #[test]
 fn fetch_context_manual_cookie_uses_web_without_browser_import() {
-    let settings = Settings::default();
+    let mut settings = Settings::default();
+    // Explicit web usage source forces the cookie path even with a stored cookie.
+    settings.set_usage_source(ProviderId::Cursor, "web");
     let mut cookies = ManualCookies::default();
     cookies.set("cursor", "session=abc123");
     let api_keys = ApiKeys::default();
